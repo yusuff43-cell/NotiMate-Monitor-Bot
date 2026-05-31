@@ -104,12 +104,12 @@ def log_to_sheet(client_cfg: dict, category: str, summary: str, amount, raw_text
 
     # Карта: категория → имя листа
     sheet_map = {
-        'sale': 'Продажи',
-        'expense': 'Расходы',
-        'stock': 'Склад',
-        'problem': 'Проблемы',
-        'task': 'Задачи',
-    }
+    'sale': 'Выручка',
+    'expense': 'Расходы',
+    'stock': 'Закупки',
+    'problem': 'Проблемы',
+    'task': 'Задачи',
+}
     worksheet_name = sheet_map.get(category, 'Сообщения')
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
 
