@@ -65,20 +65,19 @@ def analyze_message(text: str, client_cfg: dict) -> dict:
 Проанализируй сообщение и верни ТОЛЬКО JSON без markdown:
 {{
   "important": true/false,
-  "category": "sale|expense|stock|problem|task|other",
+  "category": "sale|expense|stock|problem|task|salary|other",
   "summary": "краткое описание на нужном языке",
   "amount": число или null
 }}
 
 Правила:
-- sale: входящие платежи от клиентов за товар/услугу
-- expense: только закупки товаров и оплата поставщиков (рынок, магазин, склад). Банковские переводы сотрудникам, зарплаты, история транзакций → important: false, category: other
-- stock: что-то заканчивается, нужно заказать
+- salary: банковские переводы сотрудникам, выплаты зарплат, KBIZ переводы физлицам
+- expense: оплата поставщикам, аренда, коммуналка, сервисы
+- stock: закупка товаров и продуктов для кофейни
 - problem: поломки, ЧП, жалобы, срочное
 - task: поручения, задачи
 - other: приветствия, болтовня → important: false
-- important: true только для sale/expense/stock/problem/task"""
-
+- important: true только для sale/expense/stock/problem/task/salary"""
     try:
         resp = claude.messages.create(
             model="claude-haiku-4-5",
@@ -109,6 +108,7 @@ def log_to_sheet(client_cfg: dict, category: str, summary: str, amount, raw_text
     'stock': 'Закупки',
     'problem': 'Проблемы',
     'task': 'Задачи',
+    'salary': 'Зарплаты',
 }
     worksheet_name = sheet_map.get(category, 'Сообщения')
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -119,7 +119,7 @@ def log_to_sheet(client_cfg: dict, category: str, summary: str, amount, raw_text
             ws = sh.worksheet(worksheet_name)
         except gspread.WorksheetNotFound:
             ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=5)
-            ws.append_row(['Дата', 'Категория', 'Описание', 'Сумма', 'Оригинал'])
+            ws.append_row(['Дата', 'Категория', 'Описание', 'Сумма'])
         ws.append_row([now, category, summary, amount or ''])
     except Exception as e:
         print(f"Sheet write error: {e}")
