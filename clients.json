@@ -3,6 +3,7 @@
     "name": "JSC Coffee",
     "business_type": "cafe",
     "custom_context": "ร้านกาแฟ แจ้งเตือนเรื่องสต็อก คำสั่งซื้อ ปัญหาเครื่องมือ และยอดขายประจำวัน",
+    "notification_language": "russian",
     "channel_access_token": "oxgkmjZOqG+CTder4e8rr/vCr3DSWThNw2IVmEwbSFM45KiDRtME/nGYEL69U2guQ152mIACF5a3s6escDZOyVzbkYy+DarjfExY4X8dPTMmaqaxshzB6RMiS0zmG915CKyvD6lVBbM/DPbUrbV8fQdB04t89/1O/w1cDnyilFU=",
     "channel_secret": "7b9a6600975900f12a6920e2c44f5fa6",
     "owner_line_id": "U101e334bbb17b7068090d22769fddb0b",
