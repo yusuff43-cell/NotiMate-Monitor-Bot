@@ -1,11 +1,11 @@
 {
-  "ЗАМЕНИ_НА_BOT_USER_ID_КЛИЕНТА_A": {
+  "U4ef38869ddc361d6d17b8da66212ecf8": {
     "name": "JSC Coffee",
     "business_type": "cafe",
     "custom_context": "ร้านกาแฟ แจ้งเตือนเรื่องสต็อก คำสั่งซื้อ ปัญหาเครื่องมือ และยอดขายประจำวัน",
-    "channel_access_token": "ЗАМЕНИ_НА_ТОКЕН_OA_КЛИЕНТА_A",
-    "channel_secret": "ЗАМЕНИ_НА_SECRET_КЛИЕНТА_A",
-    "owner_line_id": "ЗАМЕНИ_НА_LINE_ID_ВЛАДЕЛЬЦА_A",
-    "sheet_id": "ЗАМЕНИ_НА_GOOGLE_SHEET_ID_A"
+    "channel_access_token": "oxgkmjZOqG+CTder4e8rr/vCr3DSWThNw2IVmEwbSFM45KiDRtME/nGYEL69U2guQ152mIACF5a3s6escDZOyVzbkYy+DarjfExY4X8dPTMmaqaxshzB6RMiS0zmG915CKyvD6lVBbM/DPbUrbV8fQdB04t89/1O/w1cDnyilFU=",
+    "channel_secret": "7b9a6600975900f12a6920e2c44f5fa6",
+    "owner_line_id": "U101e334bbb17b7068090d22769fddb0b",
+    "sheet_id": "1dHpONnCV7CzJYewTkiQPERg5dm7MU-KnKsK8oqVUY1Q"
   }
 }
