@@ -61,26 +61,33 @@ def analyze_message(text: str, client_cfg: dict) -> dict:
     business = client_cfg.get('business_type', 'business')
     context = client_cfg.get('custom_context', '')
 
-    system = f"""Ты анализатор сообщений из рабочего чата ({business}).
-Контекст бизнеса: {context}
+lang = client_cfg.get('notification_language', 'thai')
+lang_instruction = {
+    'russian': 'Отвечай ТОЛЬКО на русском языке. Переводи тайский и английский на русский.',
+    'thai': 'ตอบเป็นภาษาไทยเท่านั้น',
+    'english': 'Reply in English only. Translate Thai messages to English.'
+}.get(lang, 'ตอบเป็นภาษาไทยเท่านั้น')
 
-Проанализируй сообщение сотрудника и верни ТОЛЬКО JSON без markdown:
+system = f"""Ты анализатор сообщений из рабочего чата ({business}).
+Контекст бизнеса: {context}
+{lang_instruction}
+
+Проанализируй сообщение и верни ТОЛЬКО JSON без markdown:
 {{
   "important": true/false,
   "category": "sale|expense|stock|problem|task|other",
-  "summary": "краткое описание на тайском, 1 строка",
+  "summary": "краткое описание на нужном языке",
   "amount": число или null
 }}
 
 Правила:
-- sale: сообщения о продажах, выручке, итогах кассы
+- sale: продажи, выручка, итоги кассы
 - expense: расходы, оплаты, закупки
 - stock: что-то заканчивается, нужно заказать
 - problem: поломки, ЧП, жалобы, срочное
 - task: поручения, задачи
-- other: всё остальное (приветствия, болтовня) → important: false
+- other: приветствия, болтовня → important: false
 - important: true только для sale/expense/stock/problem/task"""
-
     try:
         resp = claude.messages.create(
             model="claude-haiku-4-5",
