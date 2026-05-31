@@ -1,0 +1,11 @@
+{
+  "ЗАМЕНИ_НА_BOT_USER_ID_КЛИЕНТА_A": {
+    "name": "JSC Coffee",
+    "business_type": "cafe",
+    "custom_context": "ร้านกาแฟ แจ้งเตือนเรื่องสต็อก คำสั่งซื้อ ปัญหาเครื่องมือ และยอดขายประจำวัน",
+    "channel_access_token": "ЗАМЕНИ_НА_ТОКЕН_OA_КЛИЕНТА_A",
+    "channel_secret": "ЗАМЕНИ_НА_SECRET_КЛИЕНТА_A",
+    "owner_line_id": "ЗАМЕНИ_НА_LINE_ID_ВЛАДЕЛЬЦА_A",
+    "sheet_id": "ЗАМЕНИ_НА_GOOGLE_SHEET_ID_A"
+  }
+}
