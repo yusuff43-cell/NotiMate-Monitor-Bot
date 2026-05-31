@@ -49,26 +49,16 @@ def find_client(destination: str):
 
 # ── Анализ сообщения через Claude ───────────────────────────────
 def analyze_message(text: str, client_cfg: dict) -> dict:
-    """
-    Возвращает структуру:
-    {
-      "important": true/false,
-      "category": "sale|expense|stock|problem|task|other",
-      "summary": "краткое описание",
-      "amount": число или null
-    }
-    """
     business = client_cfg.get('business_type', 'business')
     context = client_cfg.get('custom_context', '')
+    lang = client_cfg.get('notification_language', 'thai')
+    lang_instruction = {
+        'russian': 'Отвечай ТОЛЬКО на русском языке. Переводи тайский и английский на русский.',
+        'thai': 'ตอบเป็นภาษาไทยเท่านั้น',
+        'english': 'Reply in English only. Translate Thai messages to English.'
+    }.get(lang, 'ตอบเป็นภาษาไทยเท่านั้น')
 
-lang = client_cfg.get('notification_language', 'thai')
-lang_instruction = {
-    'russian': 'Отвечай ТОЛЬКО на русском языке. Переводи тайский и английский на русский.',
-    'thai': 'ตอบเป็นภาษาไทยเท่านั้น',
-    'english': 'Reply in English only. Translate Thai messages to English.'
-}.get(lang, 'ตอบเป็นภาษาไทยเท่านั้น')
-
-system = f"""Ты анализатор сообщений из рабочего чата ({business}).
+    system = f"""Ты анализатор сообщений из рабочего чата ({business}).
 Контекст бизнеса: {context}
 {lang_instruction}
 
@@ -88,6 +78,7 @@ system = f"""Ты анализатор сообщений из рабочего 
 - task: поручения, задачи
 - other: приветствия, болтовня → important: false
 - important: true только для sale/expense/stock/problem/task"""
+
     try:
         resp = claude.messages.create(
             model="claude-haiku-4-5",
