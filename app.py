@@ -71,8 +71,8 @@ def analyze_message(text: str, client_cfg: dict) -> dict:
 }}
 
 Правила:
-- sale: продажи, выручка, итоги кассы
-- expense: расходы, оплаты, закупки
+- sale: входящие платежи от клиентов за товар/услугу
+- expense: только закупки товаров и оплата поставщиков (рынок, магазин, склад). Банковские переводы сотрудникам, зарплаты, история транзакций → important: false, category: other
 - stock: что-то заканчивается, нужно заказать
 - problem: поломки, ЧП, жалобы, срочное
 - task: поручения, задачи
@@ -120,7 +120,7 @@ def log_to_sheet(client_cfg: dict, category: str, summary: str, amount, raw_text
         except gspread.WorksheetNotFound:
             ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=5)
             ws.append_row(['Дата', 'Категория', 'Описание', 'Сумма', 'Оригинал'])
-        ws.append_row([now, category, summary, amount or '', raw_text])
+        ws.append_row([now, category, summary, amount or ''])
     except Exception as e:
         print(f"Sheet write error: {e}")
 
