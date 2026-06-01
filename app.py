@@ -1,6 +1,10 @@
 import os
 import json
 import datetime
+import re
+import time
+from apscheduler.schedulers.background import BackgroundScheduler
+import pytz
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -202,6 +206,100 @@ def process_receipt(image_content: bytes, client_cfg: dict) -> dict:
         return None
 
 # ── Webhook (общий для всех клиентов) ───────────────────────────
+
+def save_остатки(gc, sheet_id, items, date_str):
+    try:
+        sh = gc.open_by_key(sheet_id)
+        headers = ['Дата', 'Категория', 'Продукт', 'Холодильник', 'Морозилка', 'Примечание']
+        try:
+            ws = sh.worksheet('Остатки')
+        except:
+            ws = sh.add_worksheet(title='Остатки', rows=1000, cols=6)
+            ws.append_row(headers)
+        last_category = None
+        col_a = ws.col_values(1)
+        last_date = None
+        for val in reversed(col_a):
+            if val and val != 'Дата':
+                last_date = val
+                break
+        for i, item in enumerate(items):
+            date_cell = date_str if (i == 0 and last_date != date_str) else ''
+            category = item.get('category', '')
+            category_cell = category if category != last_category else ''
+            if category:
+                last_category = category
+            ws.append_row([
+                date_cell,
+                category_cell,
+                item.get('product', ''),
+                item.get('fridge', ''),
+                item.get('freezer', ''),
+                item.get('note', '')
+            ])
+    except Exception as e:
+        print(f"save_остатки error: {e}")
+
+
+def morning_report(client_cfg, claude_client, gc):
+    try:
+        import datetime as dt
+        date_today = dt.datetime.now(pytz.timezone('Asia/Bangkok')).strftime("%Y-%m-%d")
+        yesterday = (dt.datetime.now(pytz.timezone('Asia/Bangkok')) - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+        sh = gc.open_by_key(client_cfg['sheet_id'])
+
+        today_rows = []
+        try:
+            ws_ost = sh.worksheet('Остатки')
+            all_rows = ws_ost.get_all_records()
+            today_rows = [r for r in all_rows if str(r.get('Дата','')) == date_today]
+            if not today_rows:
+                today_rows = all_rows[-50:] if len(all_rows) > 50 else all_rows
+        except:
+            pass
+
+        total_yesterday = 0
+        total_recent = 0
+        try:
+            ws_exp = sh.worksheet('Расходы')
+            rows_exp = ws_exp.get_all_records()
+            yest_exp = [r for r in rows_exp if str(r.get('Дата','')) == yesterday]
+            total_yesterday = sum(float(str(r.get('Сумма',0) or r.get('amount',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in yest_exp)
+            recent = rows_exp[-100:] if len(rows_exp) > 100 else rows_exp
+            total_recent = sum(float(str(r.get('Сумма',0) or r.get('amount',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in recent)
+        except:
+            pass
+
+        остатки_текст = "\n".join([
+            f"{r.get('Продукт','')} | Холодильник: {r.get('Холодильник','')} | Морозилка: {r.get('Морозилка','')} | {r.get('Примечание','')}"
+            for r in today_rows if r.get('Продукт')
+        ])
+
+        resp = claude_client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1000,
+            system="""Ты аналитик кафе. Составь утреннюю сводку на русском языке.
+Формат:
+☀️ Доброе утро! Сводка по кофейне [дата]
+🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:
+- список
+🟡 МАЛО ОСТАЛОСЬ (1-2 шт):
+- список
+💰 РАСХОДЫ ВЧЕРА: X THB
+📊 РАСХОДЫ (последние записи): X THB
+💡 РЕКОМЕНДАЦИИ:
+- 2-3 совета""",
+            messages=[{"role": "user", "content": f"Дата: {date_today}\nОстатки:\n{остатки_текст}\n\nРасходы вчера: {total_yesterday} THB\nРасходы последние: {total_recent} THB"}]
+        )
+        msg = resp.content[0].text.strip()
+        from linebot.models import TextSendMessage
+        get_line_api(client_cfg['channel_access_token']).push_message(
+            client_cfg['owner_line_id'],
+            TextSendMessage(text=msg)
+        )
+    except Exception as e:
+        print(f"morning_report error: {e}")
+
 @app.route("/webhook", methods=['POST'])
 def webhook():
     body = request.get_data(as_text=True)
@@ -261,6 +359,33 @@ def handle_event(event: dict, client_cfg: dict):
                 text
             )
             notify_owner(client_cfg, analysis, text)
+    # ── Update остатки ──
+    elif msg_type == 'text' and text.strip().startswith('Update'):
+        import re as _re
+        date_only = datetime.datetime.now().strftime("%Y-%m-%d")
+        try:
+            resp = claude.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=4000,
+                system="Ты парсишь сообщение Update из чата кафе. Верни ТОЛЬКО JSON без markdown: {\"type\":\"stock\",\"items\":[{\"category\":\"категория\",\"product\":\"название на русском\",\"fridge\":\"\",\"freezer\":\"\",\"note\":\"\"}]} Категории: Круассаны, Десерты, Блины и сырники, Макаруны, Начинки, Другое. Правила note: Out of stock если всё 0, Low stock если 1-2 шт, Exp today если помечено",
+                messages=[{"role": "user", "content": text}]
+            )
+            raw = resp.content[0].text.strip().replace('```json','').replace('```','').strip()
+            data = json.loads(_re.search(r'\{.*\}', raw, _re.DOTALL).group())
+            if data.get('type') == 'stock' and gc:
+                save_остатки(gc, client_cfg['sheet_id'], data['items'], date_only)
+                out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
+                low = [i for i in data['items'] if i.get('note') == 'Low stock']
+                msg = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
+                if out:
+                    msg += "\n🔴 ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ:\n"
+                    for i in out: msg += f"- {i['product']}\n"
+                if low:
+                    msg += "\n🟡 МАЛО ОСТАЛОСЬ:\n"
+                    for i in low: msg += f"- {i['product']}\n"
+                notify_owner(client_cfg, {'category':'stock','summary':msg,'amount':None}, '')
+        except Exception as e:
+            print(f"Stock update error: {e}")
 
     # ── Фото (чек/счёт) ──
     elif msg_type == 'image':
@@ -295,6 +420,22 @@ def health():
         "sheets": SHEETS_ENABLED
     }, 200
 
+
+# Планировщик утренней сводки
+try:
+    scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Bangkok'))
+    for bot_id, cfg in CLIENTS.items():
+        if cfg.get('sheet_id') and gc:
+            scheduler.add_job(
+                morning_report,
+                'cron', hour=9, minute=0,
+                args=[cfg, claude, gc],
+                id=f"morning_{bot_id}"
+            )
+    scheduler.start()
+    print("Scheduler started")
+except Exception as e:
+    print(f"Scheduler error: {e}")
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
