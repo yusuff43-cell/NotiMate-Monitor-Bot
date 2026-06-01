@@ -376,7 +376,7 @@ def handle_event(event: dict, client_cfg: dict):
                 print(f'Stock update error: {e}')
         else:
             analysis = analyze_message(text, client_cfg)
-            if analysis['important']:"
+            if analysis['important']:
             log_to_sheet(
                 client_cfg,
                 analysis['category'],
