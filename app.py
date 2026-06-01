@@ -377,14 +377,14 @@ def handle_event(event: dict, client_cfg: dict):
         else:
             analysis = analyze_message(text, client_cfg)
             if analysis['important']:
-            log_to_sheet(
-                client_cfg,
-                analysis['category'],
-                analysis['summary'],
-                analysis.get('amount'),
-                text
-            )
-            notify_owner(client_cfg, analysis, text)
+                log_to_sheet(
+                    client_cfg,
+                    analysis['category'],
+                    analysis['summary'],
+                    analysis.get('amount'),
+                    text
+                )
+                notify_owner(client_cfg, analysis, text)
     # ── Update остатки ──
     elif msg_type == 'text' and text.strip().startswith('Update'):
         import re as _re
