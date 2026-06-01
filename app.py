@@ -73,7 +73,8 @@ def analyze_message(text: str, client_cfg: dict) -> dict:
 Правила:
 - salary: банковские переводы сотрудникам, выплаты зарплат, KBIZ переводы физлицам
 - expense: оплата поставщикам, аренда, коммуналка, сервисы
-- stock: закупка товаров и продуктов для кофейни
+- stock: закупка товаров и продуктов для кофейни (лёд, вода, молоко, кофе, упаковка)
+- sale: ТОЛЬКО входящие платежи от клиентов за напитки/еду, НЕ закупки
 - problem: поломки, ЧП, жалобы, срочное
 - task: поручения, задачи
 - other: приветствия, болтовня → important: false
@@ -261,30 +262,29 @@ def handle_event(event: dict, client_cfg: dict):
             notify_owner(client_cfg, analysis, text)
 
     # ── Фото (чек/счёт) ──
-        elif msg_type == 'image':
-            message_id = msg.get('id')
-            try:
-                content = api.get_message_content(message_id)
-                image_bytes = b''.join(chunk for chunk in content.iter_content())
-                receipt = process_receipt(image_bytes, client_cfg)
-
-                if receipt:
-                    category = receipt.get('category', 'expense')
-                    log_to_sheet(
-                        client_cfg,
-                        category,
-                        receipt.get('summary', 'Документ'),
-                        receipt.get('total'),
-                        ''
-                    )
-                    analysis = {
-                        'category': category,
-                        'summary': f"📸 {receipt.get('summary', 'Новый документ')}",
-                        'amount': receipt.get('total')
-                    }
-                    notify_owner(client_cfg, analysis, '')
-            except Exception as e:
-                print(f"Image error: {e}")
+    elif msg_type == 'image':
+        message_id = msg.get('id')
+        try:
+            content = api.get_message_content(message_id)
+            image_bytes = b''.join(chunk for chunk in content.iter_content())
+            receipt = process_receipt(image_bytes, client_cfg)
+            if receipt:
+                category = receipt.get('category', 'expense')
+                log_to_sheet(
+                    client_cfg,
+                    category,
+                    receipt.get('summary', 'Документ'),
+                    receipt.get('total'),
+                    ''
+                )
+                analysis = {
+                    'category': category,
+                    'summary': f"📸 {receipt.get('summary', 'Новый документ')}",
+                    'amount': receipt.get('total')
+                }
+                notify_owner(client_cfg, analysis, '')
+        except Exception as e:
+            print(f"Image error: {e}")
 
 @app.route("/health", methods=['GET'])
 def health():
