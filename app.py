@@ -452,19 +452,50 @@ def handle_event(event: dict, client_cfg: dict):
             receipt = process_receipt(image_bytes, client_cfg)
             if receipt:
                 category = receipt.get('category', 'expense')
-                log_to_sheet(
-                    client_cfg,
-                    category,
-                    receipt.get('summary', 'Документ'),
-                    receipt.get('total'),
-                    ''
-                )
-                analysis = {
-                    'category': category,
-                    'summary': f"📸 {receipt.get('summary', 'Новый документ')}",
-                    'amount': receipt.get('total')
-                }
-                notify_owner(client_cfg, analysis, '')
+                if category == 'shift' and SHEETS_ENABLED:
+                    # Shift report — пишем в Выручка по колонкам
+                    try:
+                        sh = gc.open_by_key(client_cfg['sheet_id'])
+                        try:
+                            ws = sh.worksheet('Выручка')
+                        except:
+                            ws = sh.add_worksheet(title='Выручка', rows=1000, cols=7)
+                            ws.append_row(['Дата', 'Смена', 'Gross Sales', 'Наличные', 'Карта', 'QR', 'Примечание'])
+                        import datetime as _dt
+                        date_str = _dt.datetime.now().strftime('%Y-%m-%d')
+                        ws.append_row([
+                            date_str,
+                            receipt.get('shift', ''),
+                            receipt.get('gross_sales', ''),
+                            receipt.get('cash', ''),
+                            receipt.get('card', ''),
+                            receipt.get('qr', ''),
+                            receipt.get('summary', '')
+                        ])
+                    except Exception as e:
+                        print(f"Shift sheet error: {e}")
+                    msg = f"💰 Смена #{receipt.get('shift','?')}\n"
+                    msg += f"📊 Выручка: {receipt.get('gross_sales','')} THB\n"
+                    msg += f"💵 Наличные: {receipt.get('cash','')} THB\n"
+                    msg += f"💳 Карта: {receipt.get('card','')} THB\n"
+                    msg += f"📱 QR: {receipt.get('qr','')} THB\n"
+                    diff = receipt.get('difference', 0)
+                    msg += f"✅ Касса: {'+' if float(diff or 0) >= 0 else ''}{diff} THB"
+                    notify_owner(client_cfg, {'category':'sale','summary':msg,'amount':receipt.get('gross_sales')}, '')
+                else:
+                    log_to_sheet(
+                        client_cfg,
+                        category,
+                        receipt.get('summary', 'Документ'),
+                        receipt.get('total'),
+                        ''
+                    )
+                    analysis = {
+                        'category': category,
+                        'summary': f"📸 {receipt.get('summary', 'Новый документ')}",
+                        'amount': receipt.get('total')
+                    }
+                    notify_owner(client_cfg, analysis, '')
         except Exception as e:
             print(f"Image error: {e}")
 
