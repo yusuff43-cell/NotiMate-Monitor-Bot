@@ -148,17 +148,33 @@ def notify_owner(client_cfg: dict, analysis: dict, raw_text: str):
 
 
 # ── Парсинг чеков (фото) через Claude Vision ────────────────────
-def process_receipt(image_content: bytes, client_cfg: dict):
+def process_receipt(image_content: bytes, client_cfg: dict) -> dict:
     import base64
     b64 = base64.b64encode(image_content).decode('utf-8')
+    
+    lang = client_cfg.get('notification_language', 'thai')
+    lang_instruction = {
+        'russian': 'Отвечай ТОЛЬКО на русском языке.',
+        'thai': 'ตอบเป็นภาษาไทยเท่านั้น',
+        'english': 'Reply in English only.'
+    }.get(lang, 'ตอบเป็นภาษาไทยเท่านั้น')
 
-    system = """Ты распознаёшь чеки/счета. Верни ТОЛЬКО JSON без markdown:
-{
-  "merchant": "название поставщика/магазина",
+    system = f"""Ты распознаёшь финансовые документы — чеки, счета, банковские переводы.
+{lang_instruction}
+
+Определи тип документа и верни ТОЛЬКО JSON без markdown:
+{{
+  "category": "expense|salary|sale",
+  "merchant": "название поставщика или получателя перевода",
   "total": число,
-  "items": [{"name": "позиция", "price": число}],
-  "summary": "краткое описание на тайском"
-}"""
+  "items": [{{"name": "позиция", "price": число}}],
+  "summary": "краткое описание на нужном языке"
+}}
+
+Правила категорий:
+- salary: банковский перевод физлицу (Transfer Completed, KBIZ, SCB, имя получателя)
+- expense: чек из магазина, оплата поставщику, накладная
+- sale: входящий платёж от клиента"""
 
     try:
         resp = claude.messages.create(
@@ -173,7 +189,7 @@ def process_receipt(image_content: bytes, client_cfg: dict):
                         "media_type": "image/jpeg",
                         "data": b64
                     }},
-                    {"type": "text", "text": "Распознай этот чек"}
+                    {"type": "text", "text": "Распознай этот документ"}
                 ]
             }]
         )
@@ -182,7 +198,6 @@ def process_receipt(image_content: bytes, client_cfg: dict):
     except Exception as e:
         print(f"Receipt error: {e}")
         return None
-
 
 # ── Webhook (общий для всех клиентов) ───────────────────────────
 @app.route("/webhook", methods=['POST'])
@@ -246,30 +261,30 @@ def handle_event(event: dict, client_cfg: dict):
             notify_owner(client_cfg, analysis, text)
 
     # ── Фото (чек/счёт) ──
-    elif msg_type == 'image':
-        message_id = msg.get('id')
-        try:
-            content = api.get_message_content(message_id)
-            image_bytes = b''.join(chunk for chunk in content.iter_content())
-            receipt = process_receipt(image_bytes, client_cfg)
+        elif msg_type == 'image':
+            message_id = msg.get('id')
+            try:
+                content = api.get_message_content(message_id)
+                image_bytes = b''.join(chunk for chunk in content.iter_content())
+                receipt = process_receipt(image_bytes, client_cfg)
 
-            if receipt:
-                log_to_sheet(
-                    client_cfg,
-                    'expense',
-                    receipt.get('summary', 'Чек'),
-                    receipt.get('total'),
-                    f"{receipt.get('merchant', '')}"
-                )
-                analysis = {
-                    'category': 'expense',
-                    'summary': f"📸 {receipt.get('summary', 'Новый чек')}",
-                    'amount': receipt.get('total')
-                }
-                notify_owner(client_cfg, analysis, '')
-        except Exception as e:
-            print(f"Image error: {e}")
-
+                if receipt:
+                    category = receipt.get('category', 'expense')
+                    log_to_sheet(
+                        client_cfg,
+                        category,
+                        receipt.get('summary', 'Документ'),
+                        receipt.get('total'),
+                        ''
+                    )
+                    analysis = {
+                        'category': category,
+                        'summary': f"📸 {receipt.get('summary', 'Новый документ')}",
+                        'amount': receipt.get('total')
+                    }
+                    notify_owner(client_cfg, analysis, '')
+            except Exception as e:
+                print(f"Image error: {e}")
 
 @app.route("/health", methods=['GET'])
 def health():
