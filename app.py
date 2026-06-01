@@ -348,9 +348,35 @@ def handle_event(event: dict, client_cfg: dict):
     # ── Текстовое сообщение ──
     if msg_type == 'text':
         text = msg.get('text', '').strip()
-        analysis = analyze_message(text, client_cfg)
-
-        if analysis['important']:
+        if text.startswith('Update'):
+            import re as _re
+            date_only = datetime.datetime.now().strftime('%Y-%m-%d')
+            try:
+                resp = claude.messages.create(
+                    model='claude-haiku-4-5',
+                    max_tokens=4000,
+                    system='Ты парсишь сообщение Update из чата кафе. Верни ТОЛЬКО JSON: {"type":"stock","items":[{"category":"кат","product":"название","fridge":"","freezer":"","note":""}]} Категории: Круассаны, Десерты, Блины и сырники, Макаруны, Начинки, Другое. note: Out of stock если 0, Low stock если 1-2, Exp today если помечено',
+                    messages=[{'role': 'user', 'content': text}]
+                )
+                raw = resp.content[0].text.strip().replace('```json','').replace('```','').strip()
+                data = json.loads(_re.search(r'\{.*\}', raw, _re.DOTALL).group())
+                if data.get('type') == 'stock' and gc:
+                    save_остатки(gc, client_cfg['sheet_id'], data['items'], date_only)
+                    out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
+                    low = [i for i in data['items'] if i.get('note') == 'Low stock']
+                    msg = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
+                    if out:
+                        msg += '\n🔴 ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ:\n'
+                        for i in out: msg += f"- {i['product']}\n"
+                    if low:
+                        msg += '\n🟡 МАЛО ОСТАЛОСЬ:\n'
+                        for i in low: msg += f"- {i['product']}\n"
+                    notify_owner(client_cfg, {'category':'stock','summary':msg,'amount':None}, '')
+            except Exception as e:
+                print(f'Stock update error: {e}')
+        else:
+            analysis = analyze_message(text, client_cfg)
+            if analysis['important']:"
             log_to_sheet(
                 client_cfg,
                 analysis['category'],
