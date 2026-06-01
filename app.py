@@ -348,6 +348,37 @@ def handle_event(event: dict, client_cfg: dict):
     # ── Текстовое сообщение ──
     if msg_type == 'text':
         text = msg.get('text', '').strip()
+        purchase_triggers = ['for tomorrow we need', 'we need', 'need\n', 'order ']
+        is_purchase = any(text.lower().startswith(t) for t in purchase_triggers)
+        if is_purchase:
+            import re as _re2
+            date_only = datetime.datetime.now().strftime('%Y-%m-%d')
+            try:
+                resp2 = claude.messages.create(
+                    model='claude-haiku-4-5',
+                    max_tokens=1000,
+                    system='Ты парсишь список закупок для кафе. Переводи все названия на русский. Верни ТОЛЬКО JSON: {"type":"purchase","items":[{"product":"название на русском","quantity":"количество"}]}',
+                    messages=[{'role': 'user', 'content': text}]
+                )
+                raw2 = resp2.content[0].text.strip().replace('```json','').replace('```','').strip()
+                data2 = json.loads(_re2.search(r'\{.*\}', raw2, _re2.DOTALL).group())
+                if data2.get('type') == 'stock' or data2.get('type') == 'purchase':
+                    sh2 = gc.open_by_key(client_cfg['sheet_id'])
+                    try:
+                        ws2 = sh2.worksheet('Закупки')
+                    except:
+                        ws2 = sh2.add_worksheet(title='Закупки', rows=1000, cols=3)
+                        ws2.append_row(['Дата', 'Продукт', 'Количество'])
+                    for i, item in enumerate(data2['items']):
+                        date_cell = date_only if i == 0 else ''
+                        ws2.append_row([date_cell, item.get('product',''), item.get('quantity','')])
+                    msg2 = '🛒 ЗАКУПКА записана:\n'
+                    for item in data2['items']:
+                        msg2 += f"- {item.get('product','')}: {item.get('quantity','')}\n"
+                    notify_owner(client_cfg, {'category':'stock','summary':msg2,'amount':None}, '')
+            except Exception as e:
+                print(f'Purchase error: {e}')
+        elif text.startswith('Update'):
         if text.startswith('Update'):
             import re as _re
             date_only = datetime.datetime.now().strftime('%Y-%m-%d')
