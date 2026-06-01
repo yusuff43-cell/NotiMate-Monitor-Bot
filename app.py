@@ -379,7 +379,6 @@ def handle_event(event: dict, client_cfg: dict):
             except Exception as e:
                 print(f'Purchase error: {e}')
         elif text.startswith('Update'):
-        if text.startswith('Update'):
             import re as _re
             date_only = datetime.datetime.now().strftime('%Y-%m-%d')
             try:
