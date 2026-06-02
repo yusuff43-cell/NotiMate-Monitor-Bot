@@ -1,30 +1,28 @@
+cat > app.py << 'PYEOF'
 import os
 import json
-import datetime
 import re
 import time
-from apscheduler.schedulers.background import BackgroundScheduler
-import pytz
+import base64
+import datetime
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent, TextMessage, ImageMessage, TextSendMessage
-)
+from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 import anthropic
 import gspread
 from google.oauth2.service_account import Credentials
+from apscheduler.schedulers.background import BackgroundScheduler
+import pytz
 
 app = Flask(__name__)
 
 # ── Глобальные сервисы ──────────────────────────────────────────
 claude = anthropic.Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
 
-# Загружаем конфиги всех клиентов
 with open('clients.json', 'r', encoding='utf-8') as f:
     CLIENTS = json.load(f)
 
-# Google Sheets — один service account на всех клиентов
 SHEETS_ENABLED = False
 gc = None
 try:
@@ -36,7 +34,6 @@ try:
 except Exception as e:
     print(f"Sheets init skipped: {e}")
 
-# Кэш LINE API клиентов по каждому OA (чтобы не пересоздавать)
 _line_api_cache = {}
 
 def get_line_api(token: str) -> LineBotApi:
@@ -44,210 +41,172 @@ def get_line_api(token: str) -> LineBotApi:
         _line_api_cache[token] = LineBotApi(token)
     return _line_api_cache[token]
 
-
-# ── Определение клиента по destination ──────────────────────────
 def find_client(destination: str):
-    """destination — это Bot User ID из webhook. По нему ищем клиента."""
     return CLIENTS.get(destination)
 
-
-# ── Анализ сообщения через Claude ───────────────────────────────
-def analyze_message(text: str, client_cfg: dict) -> dict:
-    business = client_cfg.get('business_type', 'business')
-    context = client_cfg.get('custom_context', '')
-    lang = client_cfg.get('notification_language', 'thai')
-    lang_instruction = {
-        'russian': 'Отвечай ТОЛЬКО на русском языке. Переводи тайский и английский на русский.',
-        'thai': 'ตอบเป็นภาษาไทยเท่านั้น',
-        'english': 'Reply in English only. Translate Thai messages to English.'
-    }.get(lang, 'ตอบเป็นภาษาไทยเท่านั้น')
-
-    system = f"""Ты анализатор сообщений из рабочего чата ({business}).
-Контекст бизнеса: {context}
-{lang_instruction}
-
-Проанализируй сообщение и верни ТОЛЬКО JSON без markdown:
-{{
-  "important": true/false,
-  "category": "sale|expense|stock|problem|task|salary|other",
-  "summary": "краткое описание на нужном языке",
-  "amount": число или null
-}}
-
-Правила:
-- salary: банковские переводы сотрудникам, выплаты зарплат, KBIZ переводы физлицам
-- expense: оплата поставщикам, аренда, коммуналка, сервисы
-- stock: закупка товаров и продуктов для кофейни (лёд, вода, молоко, кофе, упаковка)
-- sale: ТОЛЬКО итоги смены с выручкой, входящие платежи от клиентов. НЕ накладные, НЕ доставка, НЕ посылки
-- expense: оплата поставщикам, аренда, коммуналка, сервисы, накладные доставки (SPX, Kerry, Flash)
-- problem: поломки, ЧП, жалобы, срочное
-- task: поручения, задачи
-- other: приветствия, болтовня → important: false
-- important: true только для sale/expense/stock/problem/task/salary"""
+# ── Google Sheets helpers ────────────────────────────────────────
+def get_or_create_sheet(sh, name, headers):
     try:
-        resp = claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=200,
-            system=system,
-            messages=[{"role": "user", "content": text}]
-        )
-        raw = resp.content[0].text.strip()
-        raw = raw.replace('```json', '').replace('```', '').strip()
-        return json.loads(raw)
-    except Exception as e:
-        print(f"Analyze error: {e}")
-        return {"important": False, "category": "other", "summary": "", "amount": None}
+        return sh.worksheet(name)
+    except:
+        ws = sh.add_worksheet(title=name, rows=1000, cols=len(headers))
+        ws.append_row(headers)
+        return ws
 
-
-# ── Запись в Google Sheets ──────────────────────────────────────
-def log_to_sheet(client_cfg: dict, category: str, summary: str, amount, raw_text: str):
-    if not SHEETS_ENABLED:
-        return
-    sheet_id = client_cfg.get('sheet_id')
-    if not sheet_id:
-        return
-
-    # Карта: категория → имя листа
-    sheet_map = {
-    'sale': 'Выручка',
-    'expense': 'Расходы',
-    'stock': 'Закупки',
-    'problem': 'Проблемы',
-    'task': 'Задачи',
-    'salary': 'Зарплаты',
-}
-    worksheet_name = sheet_map.get(category, 'Сообщения')
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-
+def get_last_date(ws):
     try:
-        sh = gc.open_by_key(sheet_id)
-        try:
-            ws = sh.worksheet(worksheet_name)
-        except gspread.WorksheetNotFound:
-            ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=5)
-            ws.append_row(['Дата', 'Категория', 'Описание', 'Сумма'])
-        ws.append_row([now, category, summary, amount or ''])
-    except Exception as e:
-        print(f"Sheet write error: {e}")
+        col = ws.col_values(1)
+        for val in reversed(col):
+            if val and val != 'Дата':
+                return val
+    except:
+        pass
+    return None
 
+def save_остатки(sheet_id, items, date_str):
+    if not gc: return
+    sh = gc.open_by_key(sheet_id)
+    headers = ['Дата', 'Категория', 'Продукт', 'Холодильник', 'Морозилка', 'Примечание']
+    ws = get_or_create_sheet(sh, 'Остатки', headers)
+    last_date = get_last_date(ws)
+    last_category = None
+    for i, item in enumerate(items):
+        date_cell = date_str if (i == 0 and last_date != date_str) else ''
+        category = item.get('category', '')
+        category_cell = category if category != last_category else ''
+        if category:
+            last_category = category
+        ws.append_row([date_cell, category_cell, item.get('product',''), item.get('fridge',''), item.get('freezer',''), item.get('note','')])
 
-# ── Push уведомление владельцу ──────────────────────────────────
-def notify_owner(client_cfg: dict, analysis: dict, raw_text: str):
-    token = client_cfg['channel_access_token']
-    owner_id = client_cfg['owner_line_id']
+def save_закупки(sheet_id, items, date_str):
+    if not gc: return
+    sh = gc.open_by_key(sheet_id)
+    headers = ['Дата', 'Продукт', 'Количество']
+    ws = get_or_create_sheet(sh, 'Закупки', headers)
+    last_date = get_last_date(ws)
+    for i, item in enumerate(items):
+        date_cell = date_str if (i == 0 and last_date != date_str) else ''
+        ws.append_row([date_cell, item.get('product',''), item.get('quantity','')])
 
-    cat_icon = {
-        'sale': '💰', 'expense': '💸', 'stock': '📦',
-        'problem': '⚠️', 'task': '📋'
-    }
-    icon = cat_icon.get(analysis['category'], '🔔')
+def save_расходы(sheet_id, items, date_str, supplier, note=''):
+    if not gc: return
+    sh = gc.open_by_key(sheet_id)
+    headers = ['Дата', 'Тип', 'Поставщик/Магазин', 'Позиция', 'Сумма (THB)', 'Примечание']
+    ws = get_or_create_sheet(sh, 'Расходы', headers)
+    for item in items:
+        ws.append_row([date_str, item.get('type','Закупка'), supplier, item.get('description',''), item.get('amount',''), note])
 
-    msg = f"{icon} {analysis['summary']}"
-    if analysis.get('amount'):
-        msg += f"\n💵 {analysis['amount']}฿"
+def save_выручка(sheet_id, data, date_str, note=''):
+    if not gc: return
+    sh = gc.open_by_key(sheet_id)
+    headers = ['Дата', 'Смена', 'Gross Sales', 'Наличные', 'Карта', 'QR', 'Примечание']
+    ws = get_or_create_sheet(sh, 'Выручка', headers)
+    ws.append_row([date_str, data.get('shift',''), data.get('gross_sales',''), data.get('cash',''), data.get('card',''), data.get('qr',''), note])
 
+def save_проблемы(sheet_id, text, result, date_str):
+    if not gc: return
+    sh = gc.open_by_key(sheet_id)
+    headers = ['Дата', 'Сообщение', 'Перевод и совет']
+    ws = get_or_create_sheet(sh, 'Проблемы', headers)
+    ws.append_row([date_str, text, result])
+
+def notify_owner(client_cfg, msg):
     try:
-        api = get_line_api(token)
-        api.push_message(owner_id, TextSendMessage(text=msg))
+        api = get_line_api(client_cfg['channel_access_token'])
+        api.push_message(client_cfg['owner_line_id'], TextSendMessage(text=msg))
     except Exception as e:
         print(f"Notify error: {e}")
 
+# ── Анализ фото ──────────────────────────────────────────────────
+def analyze_image(image_data, client_cfg):
+    lang = client_cfg.get('notification_language', 'russian')
+    lang_map = {'russian': 'Отвечай ТОЛЬКО на русском языке.', 'thai': 'ตอบเป็นภาษาไทยเท่านั้น', 'english': 'Reply in English only.'}
+    lang_instruction = lang_map.get(lang, lang_map['russian'])
+    for attempt in range(3):
+        try:
+            response = claude.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=2000,
+                system=f"""Ты анализируешь фото документов для кофейни. {lang_instruction}
 
-# ── Парсинг чеков (фото) через Claude Vision ────────────────────
-def process_receipt(image_content: bytes, client_cfg: dict) -> dict:
-    import base64
-    b64 = base64.b64encode(image_content).decode('utf-8')
-    
-    lang = client_cfg.get('notification_language', 'thai')
-    lang_instruction = {
-        'russian': 'Отвечай ТОЛЬКО на русском языке.',
-        'thai': 'ตอบเป็นภาษาไทยเท่านั้น',
-        'english': 'Reply in English only.'
-    }.get(lang, 'ตอบเป็นภาษาไทยเท่านั้น')
+Если это SHIFT REPORT (содержит Shift number, Gross sales, Cash drawer):
+Верни ТОЛЬКО JSON: {{"doc_type":"shift","shift":"номер смены","gross_sales":число,"cash":число,"card":число,"qr":число,"difference":число,"note":""}}
 
-    system = f"""Ты распознаёшь финансовые документы — чеки, счета, банковские переводы.
+Если это НАКЛАДНАЯ от поставщика:
+Верни ТОЛЬКО JSON: {{"doc_type":"invoice","supplier":"поставщик","items":[{{"description":"позиция на русском","amount":"сумма"}}],"total":"итого","note":""}}
+
+Если это ЧЕК или фото покупки:
+Верни ТОЛЬКО JSON: {{"doc_type":"expense","supplier":"магазин","items":[{{"description":"что купили на русском","amount":"сумма"}}],"total":"итого","note":""}}
+
+Если это БАНКОВСКИЙ ПЕРЕВОД сотруднику (Transfer Completed, KBIZ, SCB):
+Верни ТОЛЬКО JSON: {{"doc_type":"salary","recipient":"имя получателя","amount":число,"note":""}}
+
+Если это ОБЪЯВЛЕНИЕ или УВЕДОМЛЕНИЕ:
+Верни ТОЛЬКО JSON: {{"doc_type":"notice","title":"заголовок","content":"перевод","note":""}}
+
+Скриншоты магазинов, ценники, фото продуктов без чека — верни: NOT_FINANCE
+Если не финансовый документ — верни: NOT_FINANCE""",
+                messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}}, {"type": "text", "text": "Проанализируй"}]}]
+            )
+            return response.content[0].text.strip()
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529 and attempt < 2:
+                time.sleep(10)
+                continue
+            raise e
+
+# ── Анализ текста ────────────────────────────────────────────────
+def analyze_text(text, client_cfg):
+    lang = client_cfg.get('notification_language', 'russian')
+    lang_map = {'russian': 'Отвечай ТОЛЬКО на русском языке. Переводи тайский и английский на русский.', 'thai': 'ตอบเป็นภาษาไทยเท่านั้น', 'english': 'Reply in English only.'}
+    lang_instruction = lang_map.get(lang, lang_map['russian'])
+    for attempt in range(3):
+        try:
+            response = claude.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=8096,
+                system=f"""КРИТИЧЕСКИ ВАЖНО: Только анализируй сообщения по правилам. Если не подходит — верни ТОЛЬКО: IGNORE
 {lang_instruction}
 
-Определи тип документа и верни ТОЛЬКО JSON без markdown:
-{{
-  "category": "expense|salary|sale",
-  "merchant": "название поставщика или получателя перевода",
-  "total": число,
-  "items": [{{"name": "позиция", "price": число}}],
-  "summary": "краткое описание на нужном языке"
-}}
+СЛОВАРЬ: Clear/Clear croissant=Масляный круассан, Chocolate=Шоколадный круассан, Almond=Миндальный круассан, Ham Cheese=Круассан с ветчиной и сыром, Cheesecake=Чизкейк, Biscoff cheesecake=Бискофф чизкейк, Cheese pancakes=Сырники, Mango cheese pancakes=Манговые сырники, Cucumber cheese pancakes=Огуречные сырники, Crepes=Шпинатные блинчики, Pancakes=Панкейки, Crepes burger=Блины для бургера, Pannacotta=Панна-котта, Chocolate mousse=Шоколадный мусс, Salted Caramel=Солёная карамель, Bounty=Баунти, Halva=Халва, Marzipan=Марципан, Brownie=Брауни, Banana bread=Банановый хлеб, Muffin=Маффин, Snickers=Сникерс, Napoleons=Наполеон, Sourdough=Хлеб на закваске (для брускет), Dragon fruit=Драгон фрут, Salmon=Лосось, Yogurt=Йогурт, Açaí=Асаи
 
-Правила категорий:
-- salary: банковский перевод физлицу (Transfer Completed, KBIZ, SCB, имя получателя)
-- expense: чек из магазина, оплата поставщику, накладная
-- sale: входящий платёж от клиента"""
+ТИПЫ СООБЩЕНИЙ:
 
+1. ЗАКУПКИ - "we need", "for tomorrow", "need", "order" в начале
+Верни ТОЛЬКО JSON: {{"type":"purchase","items":[{{"product":"название на русском","quantity":"количество"}}]}}
+
+2. ОСТАТКИ - начинаются с "Update"
+Верни ТОЛЬКО JSON: {{"type":"stock","items":[{{"category":"Круассаны/Десерты/Блины и сырники/Макаруны/Начинки/Другое","product":"название на русском","fridge":"","freezer":"","note":""}}]}}
+Правила note: "Out of stock" если всё 0, "Low stock" если 1-2 шт, "Exp today" если помечено
+
+3. ОСТАТОК ОДНОЙ ПОЗИЦИИ - "товар have/has количество" или "товар количество г/pcs"
+Верни ТОЛЬКО JSON: {{"type":"single_stock","product":"название на русском","amount":"количество"}}
+
+4. РАСХОД - покупка с подтверждением (bought, paid, total, ฿, -)
+Триггеры: "bought","paid","total","spent","-число฿ for", минус перед суммой
+Верни ТОЛЬКО JSON: {{"type":"text_expense","supplier":"магазин","items":[{{"description":"что купили на русском"}}],"total":"сумма"}}
+
+5. ПРОБЛЕМА - поломки, аварии, инциденты
+Верни: ВАЖНО [ПРОБЛЕМА]: [описание]\\n💡 Совет: [совет]
+
+Если не подходит — верни только: IGNORE""",
+                messages=[{"role": "user", "content": text}]
+            )
+            return response.content[0].text.strip()
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529 and attempt < 2:
+                time.sleep(10)
+                continue
+            raise e
+
+# ── Утренняя сводка ──────────────────────────────────────────────
+def morning_report(client_cfg):
     try:
-        resp = claude.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=500,
-            system=system,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": b64
-                    }},
-                    {"type": "text", "text": "Распознай этот документ"}
-                ]
-            }]
-        )
-        raw = resp.content[0].text.strip().replace('```json', '').replace('```', '').strip()
-        return json.loads(raw)
-    except Exception as e:
-        print(f"Receipt error: {e}")
-        return None
-
-# ── Webhook (общий для всех клиентов) ───────────────────────────
-
-def save_остатки(gc, sheet_id, items, date_str):
-    try:
-        sh = gc.open_by_key(sheet_id)
-        headers = ['Дата', 'Категория', 'Продукт', 'Холодильник', 'Морозилка', 'Примечание']
-        try:
-            ws = sh.worksheet('Остатки')
-        except:
-            ws = sh.add_worksheet(title='Остатки', rows=1000, cols=6)
-            ws.append_row(headers)
-        last_category = None
-        col_a = ws.col_values(1)
-        last_date = None
-        for val in reversed(col_a):
-            if val and val != 'Дата':
-                last_date = val
-                break
-        for i, item in enumerate(items):
-            date_cell = date_str if (i == 0 and last_date != date_str) else ''
-            category = item.get('category', '')
-            category_cell = category if category != last_category else ''
-            if category:
-                last_category = category
-            ws.append_row([
-                date_cell,
-                category_cell,
-                item.get('product', ''),
-                item.get('fridge', ''),
-                item.get('freezer', ''),
-                item.get('note', '')
-            ])
-    except Exception as e:
-        print(f"save_остатки error: {e}")
-
-
-def morning_report(client_cfg, claude_client, gc):
-    try:
-        import datetime as dt
-        date_today = dt.datetime.now(pytz.timezone('Asia/Bangkok')).strftime("%Y-%m-%d")
-        yesterday = (dt.datetime.now(pytz.timezone('Asia/Bangkok')) - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+        tz = pytz.timezone('Asia/Bangkok')
+        now = datetime.datetime.now(tz)
+        date_today = now.strftime("%Y-%m-%d")
+        yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         sh = gc.open_by_key(client_cfg['sheet_id'])
-
         today_rows = []
         try:
             ws_ost = sh.worksheet('Остатки')
@@ -255,270 +214,161 @@ def morning_report(client_cfg, claude_client, gc):
             today_rows = [r for r in all_rows if str(r.get('Дата','')) == date_today]
             if not today_rows:
                 today_rows = all_rows[-50:] if len(all_rows) > 50 else all_rows
-        except:
-            pass
-
+        except: pass
         total_yesterday = 0
         total_recent = 0
         try:
             ws_exp = sh.worksheet('Расходы')
             rows_exp = ws_exp.get_all_records()
             yest_exp = [r for r in rows_exp if str(r.get('Дата','')) == yesterday]
-            total_yesterday = sum(float(str(r.get('Сумма',0) or r.get('amount',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in yest_exp)
+            total_yesterday = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in yest_exp)
             recent = rows_exp[-100:] if len(rows_exp) > 100 else rows_exp
-            total_recent = sum(float(str(r.get('Сумма',0) or r.get('amount',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in recent)
-        except:
-            pass
-
-        остатки_текст = "\n".join([
-            f"{r.get('Продукт','')} | Холодильник: {r.get('Холодильник','')} | Морозилка: {r.get('Морозилка','')} | {r.get('Примечание','')}"
-            for r in today_rows if r.get('Продукт')
-        ])
-
-        resp = claude_client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=1000,
-            system="""Ты аналитик кафе. Составь утреннюю сводку на русском языке.
-Формат:
-☀️ Доброе утро! Сводка по кофейне [дата]
-🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:
-- список
-🟡 МАЛО ОСТАЛОСЬ (1-2 шт):
-- список
-💰 РАСХОДЫ ВЧЕРА: X THB
-📊 РАСХОДЫ (последние записи): X THB
-💡 РЕКОМЕНДАЦИИ:
-- 2-3 совета""",
-            messages=[{"role": "user", "content": f"Дата: {date_today}\nОстатки:\n{остатки_текст}\n\nРасходы вчера: {total_yesterday} THB\nРасходы последние: {total_recent} THB"}]
+            total_recent = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in recent)
+        except: pass
+        остатки_текст = "\n".join([f"{r.get('Продукт','')} | Холодильник: {r.get('Холодильник','')} | Морозилка: {r.get('Морозилка','')} | {r.get('Примечание','')}" for r in today_rows if r.get('Продукт')])
+        resp = claude.messages.create(
+            model="claude-haiku-4-5", max_tokens=1000,
+            system="Ты аналитик кафе. Составь утреннюю сводку на русском.\nФормат:\n☀️ Доброе утро! Сводка по кофейне [дата]\n🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:\n- список\n🟡 МАЛО ОСТАЛОСЬ (1-2 шт):\n- список\n💰 РАСХОДЫ ВЧЕРА: X THB\n📊 РАСХОДЫ (последние записи): X THB\n💡 РЕКОМЕНДАЦИИ:\n- 2-3 совета",
+            messages=[{"role": "user", "content": f"Дата: {date_today}\nОстатки:\n{остатки_текст}\nРасходы вчера: {total_yesterday} THB\nРасходы последние: {total_recent} THB"}]
         )
-        msg = resp.content[0].text.strip()
-        from linebot.models import TextSendMessage
-        get_line_api(client_cfg['channel_access_token']).push_message(
-            client_cfg['owner_line_id'],
-            TextSendMessage(text=msg)
-        )
+        notify_owner(client_cfg, resp.content[0].text.strip())
     except Exception as e:
-        print(f"morning_report error: {e}")
+        print(f"Morning report error: {e}")
 
+# ── Webhook ──────────────────────────────────────────────────────
 @app.route("/webhook", methods=['POST'])
 def webhook():
     body = request.get_data(as_text=True)
-
     try:
         events = json.loads(body)
-    except Exception:
+    except:
         abort(400)
-
     destination = events.get('destination', '')
     client_cfg = find_client(destination)
-
     if not client_cfg:
         print(f"Unknown destination: {destination}")
-        return 'OK'  # не наш клиент — игнорируем
-
-    # Проверка подписи через secret конкретного клиента
+        return 'OK'
     signature = request.headers.get('X-Line-Signature', '')
     handler = WebhookHandler(client_cfg['channel_secret'])
-
-    # Обрабатываем события вручную (multi-tenant)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
     for event in events.get('events', []):
-        try:
-            handle_event(event, client_cfg)
-        except Exception as e:
-            print(f"Event error: {e}")
+        if event.get('type') != 'message':
+            continue
+        source = event.get('source', {})
+        if source.get('type') not in ('group', 'room'):
+            continue
+        msg = event.get('message', {})
+        msg_type = msg.get('type')
+        date_only = datetime.datetime.now().strftime("%Y-%m-%d")
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        api = get_line_api(client_cfg['channel_access_token'])
 
-    return 'OK'
-
-
-def handle_event(event: dict, client_cfg: dict):
-    if event.get('type') != 'message':
-        return
-
-    msg = event.get('message', {})
-    msg_type = msg.get('type')
-    source = event.get('source', {})
-
-    # Слушаем только группы (рабочие чаты), не личку
-    if source.get('type') not in ('group', 'room'):
-        return
-
-    token = client_cfg['channel_access_token']
-    api = get_line_api(token)
-
-    # ── Текстовое сообщение ──
-    if msg_type == 'text':
-        text = msg.get('text', '').strip()
-        purchase_triggers = ['for tomorrow we need', 'we need', 'need\n', 'order ']
-        is_purchase = any(text.lower().startswith(t) for t in purchase_triggers)
-        if is_purchase:
-            import re as _re2
-            date_only = datetime.datetime.now().strftime('%Y-%m-%d')
+        # ── Текст ──
+        if msg_type == 'text':
+            text = msg.get('text', '').strip()
+            result = analyze_text(text, client_cfg)
+            if result == 'IGNORE' or not result:
+                continue
+            if result.startswith('ВАЖНО [ПРОБЛЕМА]'):
+                save_проблемы(client_cfg['sheet_id'], text, result, now_str)
+                notify_owner(client_cfg, result)
+                continue
             try:
-                resp2 = claude.messages.create(
-                    model='claude-haiku-4-5',
-                    max_tokens=1000,
-                    system='Ты парсишь список закупок для кафе. Переводи все названия на русский. Верни ТОЛЬКО JSON: {"type":"purchase","items":[{"product":"название на русском","quantity":"количество"}]}',
-                    messages=[{'role': 'user', 'content': text}]
-                )
-                raw2 = resp2.content[0].text.strip().replace('```json','').replace('```','').strip()
-                data2 = json.loads(_re2.search(r'\{.*\}', raw2, _re2.DOTALL).group())
-                if data2.get('type') == 'stock' or data2.get('type') == 'purchase':
-                    sh2 = gc.open_by_key(client_cfg['sheet_id'])
-                    try:
-                        ws2 = sh2.worksheet('Закупки')
-                    except:
-                        ws2 = sh2.add_worksheet(title='Закупки', rows=1000, cols=3)
-                        ws2.append_row(['Дата', 'Продукт', 'Количество'])
-                    for i, item in enumerate(data2['items']):
-                        date_cell = date_only if i == 0 else ''
-                        ws2.append_row([date_cell, item.get('product',''), item.get('quantity','')])
-                    msg2 = '🛒 ЗАКУПКА записана:\n'
-                    for item in data2['items']:
-                        msg2 += f"- {item.get('product','')}: {item.get('quantity','')}\n"
-                    notify_owner(client_cfg, {'category':'stock','summary':msg2,'amount':None}, '')
-            except Exception as e:
-                print(f'Purchase error: {e}')
-        elif text.startswith('Update'):
-            import re as _re
-            date_only = datetime.datetime.now().strftime('%Y-%m-%d')
-            try:
-                resp = claude.messages.create(
-                    model='claude-haiku-4-5',
-                    max_tokens=4000,
-                    system='Ты парсишь сообщение Update из чата кафе. Переводи ВСЕ названия на русский. Словарь: Clear=Масляный круассан, Chocolate=Шоколадный круассан, Almond=Миндальный круассан, Ham Cheese=Круассан с ветчиной и сыром, Cheesecake=Чизкейк, Biscoff Cheesecake=Бискофф чизкейк, Cheese pancakes=Сырники, Mango cheese pancakes=Манговые сырники, Cucumber cheese pancakes=Огуречные сырники, Crepes=Шпинатные блинчики, Pancakes=Панкейки, Pannacotta=Панна-котта, Chocolate mousse=Шоколадный мусс, Salted Caramel=Солёная карамель, Bounty=Баунти, Halva=Халва, Marzipan=Марципан, Brownie=Брауни, Banana bread=Банановый хлеб, Muffin=Маффин, Snickers=Сникерс, Napoleons=Наполеон, Vanilla macaron=Ванильный макарон, Bounty macaron=Макарон Баунти, Caramel macaron=Карамельный макарон, Glazed strawberry=Глазированный сырок клубника, Glazed coconut=Глазированный сырок кокос, Glazed milk=Глазированный сырок, Burrito sauce=Соус для буррито. Верни ТОЛЬКО JSON: {"type":"stock","items":[{"category":"кат","product":"название на русском","fridge":"","freezer":"","note":""}]} Категории: Круассаны, Десерты, Блины и сырники, Макаруны, Начинки, Другое. note: Out of stock если 0, Low stock если 1-2, Exp today если помечено',
-                    messages=[{'role': 'user', 'content': text}]
-                )
-                raw = resp.content[0].text.strip().replace('```json','').replace('```','').strip()
-                data = json.loads(_re.search(r'\{.*\}', raw, _re.DOTALL).group())
-                if data.get('type') == 'stock' and gc:
-                    save_остатки(gc, client_cfg['sheet_id'], data['items'], date_only)
+                json_match = re.search(r'\{.*\}', result, re.DOTALL)
+                if not json_match:
+                    continue
+                data = json.loads(json_match.group())
+                if data['type'] == 'purchase':
+                    save_закупки(client_cfg['sheet_id'], data['items'], date_only)
+                    msg_text = "🛒 ЗАКУПКА записана:\n"
+                    for item in data['items']:
+                        msg_text += f"- {item['product']}: {item['quantity']}\n"
+                    notify_owner(client_cfg, msg_text)
+                elif data['type'] == 'stock':
+                    save_остатки(client_cfg['sheet_id'], data['items'], date_only)
                     out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
                     low = [i for i in data['items'] if i.get('note') == 'Low stock']
-                    msg = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
+                    msg_text = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
                     if out:
-                        msg += '\n🔴 ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ:\n'
-                        for i in out: msg += f"- {i['product']}\n"
+                        msg_text += "\n🔴 ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ:\n"
+                        for i in out: msg_text += f"- {i['product']}\n"
                     if low:
-                        msg += '\n🟡 МАЛО ОСТАЛОСЬ:\n'
-                        for i in low: msg += f"- {i['product']}\n"
-                    notify_owner(client_cfg, {'category':'stock','summary':msg,'amount':None}, '')
-            except Exception as e:
-                print(f'Stock update error: {e}')
-        else:
-            analysis = analyze_message(text, client_cfg)
-            if analysis['important']:
-                log_to_sheet(
-                    client_cfg,
-                    analysis['category'],
-                    analysis['summary'],
-                    analysis.get('amount'),
-                    text
-                )
-                notify_owner(client_cfg, analysis, text)
-    # ── Update остатки ──
-    elif msg_type == 'text' and text.strip().startswith('Update'):
-        import re as _re
-        date_only = datetime.datetime.now().strftime("%Y-%m-%d")
-        try:
-            resp = claude.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=4000,
-                system="Ты парсишь сообщение Update из чата кафе. Верни ТОЛЬКО JSON без markdown: {\"type\":\"stock\",\"items\":[{\"category\":\"категория\",\"product\":\"название на русском\",\"fridge\":\"\",\"freezer\":\"\",\"note\":\"\"}]} Категории: Круассаны, Десерты, Блины и сырники, Макаруны, Начинки, Другое. Правила note: Out of stock если всё 0, Low stock если 1-2 шт, Exp today если помечено",
-                messages=[{"role": "user", "content": text}]
-            )
-            raw = resp.content[0].text.strip().replace('```json','').replace('```','').strip()
-            data = json.loads(_re.search(r'\{.*\}', raw, _re.DOTALL).group())
-            if data.get('type') == 'stock' and gc:
-                save_остатки(gc, client_cfg['sheet_id'], data['items'], date_only)
-                out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
-                low = [i for i in data['items'] if i.get('note') == 'Low stock']
-                msg = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
-                if out:
-                    msg += "\n🔴 ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ:\n"
-                    for i in out: msg += f"- {i['product']}\n"
-                if low:
-                    msg += "\n🟡 МАЛО ОСТАЛОСЬ:\n"
-                    for i in low: msg += f"- {i['product']}\n"
-                notify_owner(client_cfg, {'category':'stock','summary':msg,'amount':None}, '')
-        except Exception as e:
-            print(f"Stock update error: {e}")
-
-    # ── Фото (чек/счёт) ──
-    elif msg_type == 'image':
-        message_id = msg.get('id')
-        try:
-            content = api.get_message_content(message_id)
-            image_bytes = b''.join(chunk for chunk in content.iter_content())
-            receipt = process_receipt(image_bytes, client_cfg)
-            if receipt:
-                category = receipt.get('category', 'expense')
-                if category == 'shift' and SHEETS_ENABLED:
-                    # Shift report — пишем в Выручка по колонкам
-                    try:
+                        msg_text += "\n🟡 МАЛО ОСТАЛОСЬ:\n"
+                        for i in low: msg_text += f"- {i['product']}\n"
+                    notify_owner(client_cfg, msg_text)
+                elif data['type'] == 'single_stock':
+                    if gc:
                         sh = gc.open_by_key(client_cfg['sheet_id'])
-                        try:
-                            ws = sh.worksheet('Выручка')
-                        except:
-                            ws = sh.add_worksheet(title='Выручка', rows=1000, cols=7)
-                            ws.append_row(['Дата', 'Смена', 'Gross Sales', 'Наличные', 'Карта', 'QR', 'Примечание'])
-                        import datetime as _dt
-                        date_str = _dt.datetime.now().strftime('%Y-%m-%d')
-                        ws.append_row([
-                            date_str,
-                            receipt.get('shift', ''),
-                            receipt.get('gross_sales', ''),
-                            receipt.get('cash', ''),
-                            receipt.get('card', ''),
-                            receipt.get('qr', ''),
-                            receipt.get('summary', '')
-                        ])
-                    except Exception as e:
-                        print(f"Shift sheet error: {e}")
-                    msg = f"💰 Смена #{receipt.get('shift','?')}\n"
-                    msg += f"📊 Выручка: {receipt.get('gross_sales','')} THB\n"
-                    msg += f"💵 Наличные: {receipt.get('cash','')} THB\n"
-                    msg += f"💳 Карта: {receipt.get('card','')} THB\n"
-                    msg += f"📱 QR: {receipt.get('qr','')} THB\n"
-                    diff = receipt.get('difference', 0)
-                    msg += f"✅ Касса: {'+' if float(diff or 0) >= 0 else ''}{diff} THB"
-                    notify_owner(client_cfg, {'category':'sale','summary':msg,'amount':receipt.get('gross_sales')}, '')
-                else:
-                    log_to_sheet(
-                        client_cfg,
-                        category,
-                        receipt.get('summary', 'Документ'),
-                        receipt.get('total'),
-                        ''
-                    )
-                    analysis = {
-                        'category': category,
-                        'summary': f"📸 {receipt.get('summary', 'Новый документ')}",
-                        'amount': receipt.get('total')
-                    }
-                    notify_owner(client_cfg, analysis, '')
-        except Exception as e:
-            print(f"Image error: {e}")
+                        ws = get_or_create_sheet(sh, 'Остатки', ['Дата','Категория','Продукт','Холодильник','Морозилка','Примечание'])
+                        ws.append_row([date_only, '', data.get('product',''), data.get('amount',''), '', ''])
+                    notify_owner(client_cfg, f"📦 Остаток записан:\n{data.get('product','')}: {data.get('amount','')}")
+                elif data['type'] == 'text_expense':
+                    items = data.get('items', [])
+                    total = data.get('total', '')
+                    supplier = data.get('supplier', '')
+                    positions = ', '.join([i['description'] for i in items if i.get('description')])
+                    if gc:
+                        sh = gc.open_by_key(client_cfg['sheet_id'])
+                        ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
+                        ws.append_row([date_only, 'Закупка', supplier, positions, total, ''])
+                    notify_owner(client_cfg, f"💸 РАСХОД записан:\nМагазин: {supplier}\nПозиции: {positions}\nИтого: {total} THB")
+            except Exception as e:
+                print(f"Text handler error: {e}")
+
+        # ── Фото ──
+        elif msg_type == 'image':
+            try:
+                content = api.get_message_content(msg.get('id'))
+                image_data = base64.b64encode(content.content).decode('utf-8')
+                result = analyze_image(image_data, client_cfg)
+                if 'NOT_FINANCE' in result:
+                    continue
+                json_match = re.search(r'\{.*\}', result, re.DOTALL)
+                if not json_match:
+                    continue
+                data = json.loads(json_match.group())
+                doc_type = data.get('doc_type')
+                if doc_type == 'shift':
+                    save_выручка(client_cfg['sheet_id'], data, date_only, data.get('note',''))
+                    diff = data.get('difference', 0)
+                    msg_text = f"💰 Смена #{data.get('shift','?')}\n"
+                    msg_text += f"📊 Выручка: {data.get('gross_sales','')} THB\n"
+                    msg_text += f"💵 Наличные: {data.get('cash','')} THB\n"
+                    msg_text += f"💳 Карта: {data.get('card','')} THB\n"
+                    msg_text += f"📱 QR: {data.get('qr','')} THB\n"
+                    msg_text += f"✅ Касса: {'+' if float(diff or 0) >= 0 else ''}{diff} THB"
+                    notify_owner(client_cfg, msg_text)
+                elif doc_type == 'invoice':
+                    save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
+                    notify_owner(client_cfg, f"🧾 НАКЛАДНАЯ записана\nПоставщик: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
+                elif doc_type == 'expense':
+                    save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
+                    notify_owner(client_cfg, f"🛒 РАСХОД записан\nМагазин: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
+                elif doc_type == 'salary':
+                    if gc:
+                        sh = gc.open_by_key(client_cfg['sheet_id'])
+                        ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
+                        ws.append_row([date_only, data.get('recipient',''), data.get('amount',''), data.get('note','')])
+                    notify_owner(client_cfg, f"💼 ЗАРПЛАТА записана\nПолучатель: {data.get('recipient','—')}\nСумма: {data.get('amount','—')} THB")
+                elif doc_type == 'notice':
+                    notify_owner(client_cfg, f"⚡️ ВАЖНОЕ УВЕДОМЛЕНИЕ\n\n{data.get('title','')}\n\n{data.get('content','')}")
+            except Exception as e:
+                print(f"Image handler error: {e}")
+    return 'OK'
 
 @app.route("/health", methods=['GET'])
 def health():
-    return {
-        "status": "ok",
-        "clients": len(CLIENTS),
-        "sheets": SHEETS_ENABLED
-    }, 200
+    return {"status": "ok", "clients": len(CLIENTS), "sheets": SHEETS_ENABLED}, 200
 
-
-# Планировщик утренней сводки
+# ── Планировщик ──────────────────────────────────────────────────
 try:
     scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Bangkok'))
     for bot_id, cfg in CLIENTS.items():
         if cfg.get('sheet_id') and gc:
-            scheduler.add_job(
-                morning_report,
-                'cron', hour=9, minute=0,
-                args=[cfg, claude, gc],
-                id=f"morning_{bot_id}"
-            )
+            scheduler.add_job(morning_report, 'cron', hour=9, minute=0, args=[cfg], id=f"morning_{bot_id}")
     scheduler.start()
     print("Scheduler started")
 except Exception as e:
