@@ -144,7 +144,7 @@ def analyze_image(image_data, client_cfg):
 Верни ТОЛЬКО JSON: {{"doc_type":"notice","title":"заголовок","content":"перевод","note":""}}
 
 Если это СКРИНШОТ ИСТОРИИ ТРАНЗАКЦИЙ из банковского приложения (Transaction history, Payment, Transfer, Top up):
-Верни ТОЛЬКО JSON: {"doc_type":"bank_history","items":[{"type":"expense","recipient":"получатель","amount":0,"note":""}]}
+Верни ТОЛЬКО JSON: {{"doc_type":"bank_history","items":[{{"type":"expense","recipient":"получатель","amount":0,"note":""}}]}}
 Правила:
 - Payment/Scan to pay → type=expense
 - Transfer PromptPay к физлицу (имя) → type=salary  
