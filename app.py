@@ -143,6 +143,14 @@ def analyze_image(image_data, client_cfg):
 Если это ОБЪЯВЛЕНИЕ или УВЕДОМЛЕНИЕ:
 Верни ТОЛЬКО JSON: {{"doc_type":"notice","title":"заголовок","content":"перевод","note":""}}
 
+Если это СКРИНШОТ ИСТОРИИ ТРАНЗАКЦИЙ из банковского приложения (Transaction history, Payment, Transfer, Top up):
+Верни ТОЛЬКО JSON: {"doc_type":"bank_history","items":[{"type":"expense/salary","recipient":"получатель","amount":число,"note":""}]}
+Правила:
+- Payment/Scan to pay → type=expense
+- Transfer PromptPay к физлицу (имя) → type=salary  
+- Top up PromptPay Wallet → type=expense
+- Игнорируй строки без суммы
+
 Скриншоты магазинов, ценники, фото продуктов без чека — верни: NOT_FINANCE
 Если не финансовый документ — верни: NOT_FINANCE""",
                 messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}}, {"type": "text", "text": "Проанализируй"}]}]
@@ -354,6 +362,26 @@ def webhook():
                     notify_owner(client_cfg, f"💼 ЗАРПЛАТА записана\nПолучатель: {data.get('recipient','—')}\nСумма: {data.get('amount','—')} THB")
                 elif doc_type == 'notice':
                     notify_owner(client_cfg, f"⚡️ ВАЖНОЕ УВЕДОМЛЕНИЕ\n\n{data.get('title','')}\n\n{data.get('content','')}")
+                elif doc_type == 'bank_history':
+                    items = data.get('items', [])
+                    expenses = [i for i in items if i.get('type') == 'expense']
+                    salaries = [i for i in items if i.get('type') == 'salary']
+                    if gc and expenses:
+                        sh = gc.open_by_key(client_cfg['sheet_id'])
+                        ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
+                        for item in expenses:
+                            ws.append_row([date_only, 'Закупка', item.get('recipient',''), '', item.get('amount',''), item.get('note','')])
+                    if gc and salaries:
+                        sh = gc.open_by_key(client_cfg['sheet_id'])
+                        ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
+                        for item in salaries:
+                            ws.append_row([date_only, item.get('recipient',''), item.get('amount',''), item.get('note','')])
+                    msg = f"🏦 ТРАНЗАКЦИИ записаны ({len(items)} шт)\n"
+                    if expenses:
+                        msg += f"💸 Расходы: {len(expenses)} шт\n"
+                    if salaries:
+                        msg += f"💼 Зарплаты: {len(salaries)} шт"
+                    notify_owner(client_cfg, msg)
             except Exception as e:
                 print(f"Image handler error: {e}")
     return 'OK'
