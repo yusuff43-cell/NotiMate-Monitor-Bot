@@ -1,4 +1,3 @@
-cat > app.py << 'PYEOF'
 import os
 import json
 import re
