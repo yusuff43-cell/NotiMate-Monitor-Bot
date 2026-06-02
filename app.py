@@ -138,13 +138,13 @@ def analyze_image(image_data, client_cfg):
 Верни ТОЛЬКО JSON: {{"doc_type":"expense","supplier":"магазин","items":[{{"description":"что купили на русском","amount":"сумма"}}],"total":"итого","note":""}}
 
 Если это БАНКОВСКИЙ ПЕРЕВОД сотруднику (Transfer Completed, KBIZ, SCB):
-Верни ТОЛЬКО JSON: {{"doc_type":"salary","recipient":"имя получателя","amount":число,"note":""}}
+Верни ТОЛЬКО JSON: {{"doc_type":"salary","recipient":"имя получателя","amount":0,"note":""}}
 
 Если это ОБЪЯВЛЕНИЕ или УВЕДОМЛЕНИЕ:
 Верни ТОЛЬКО JSON: {{"doc_type":"notice","title":"заголовок","content":"перевод","note":""}}
 
 Если это СКРИНШОТ ИСТОРИИ ТРАНЗАКЦИЙ из банковского приложения (Transaction history, Payment, Transfer, Top up):
-Верни ТОЛЬКО JSON: {"doc_type":"bank_history","items":[{"type":"expense/salary","recipient":"получатель","amount":число,"note":""}]}
+Верни ТОЛЬКО JSON: {"doc_type":"bank_history","items":[{"type":"expense/salary","recipient":"получатель","amount":0,"note":""}]}
 Правила:
 - Payment/Scan to pay → type=expense
 - Transfer PromptPay к физлицу (имя) → type=salary  
