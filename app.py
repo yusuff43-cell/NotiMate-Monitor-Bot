@@ -327,6 +327,7 @@ def webhook():
 
         # ── Фото ──
         elif msg_type == 'image':
+            print(f'Image received, processing...')
             try:
                 content = api.get_message_content(msg.get('id'))
                 image_data = base64.b64encode(content.content).decode('utf-8')
