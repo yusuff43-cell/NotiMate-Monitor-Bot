@@ -276,7 +276,8 @@ def webhook():
             continue
         source = event.get('source', {})
         if source.get('type') not in ('group', 'room'):
-            if msg.get('type') == 'text' and msg.get('text','').lower().strip() in ['сводка','отчет','отчёт','report']:
+            _msg = event.get('message', {})
+            if _msg.get('type') == 'text' and _msg.get('text','').lower().strip() in ['сводка','отчет','отчёт','report']:
                 morning_report(client_cfg)
             continue
         msg = event.get('message', {})
