@@ -253,6 +253,84 @@ def analyze_text(text, client_cfg):
 
 # ── Утренняя сводка ──────────────────────────────────────────────
 _last_report = {}
+def weekly_report(client_cfg):
+    """Еженедельная аналитика — воскресенье 18:00"""
+    if not gc:
+        return
+    try:
+        tz = pytz.timezone('Asia/Bangkok')
+        now = datetime.datetime.now(tz)
+        week_ago = (now - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
+        date_today = now.strftime('%Y-%m-%d')
+        sh = gc.open_by_key(client_cfg['sheet_id'])
+
+        # Выручка за неделю
+        total_revenue = 0
+        try:
+            ws_rev = sh.worksheet('Выручка')
+            rows_rev = ws_rev.get_all_records()
+            week_rev = [r for r in rows_rev if str(r.get('Дата','')).strip() >= week_ago]
+            total_revenue = sum(float(str(r.get('Gross Sales',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in week_rev)
+        except: pass
+
+        # Расходы за неделю
+        total_expenses = 0
+        try:
+            ws_exp = sh.worksheet('Расходы')
+            rows_exp = ws_exp.get_all_records()
+            week_exp = [r for r in rows_exp if str(r.get('Дата','')).strip() >= week_ago]
+            total_expenses = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in week_exp)
+        except: pass
+
+        # Проблемы за неделю
+        problems_text = ''
+        try:
+            ws_prob = sh.worksheet('Проблемы')
+            rows_prob = ws_prob.get_all_records()
+            week_prob = [r for r in rows_prob if str(r.get('Дата','')).strip() >= week_ago]
+            if week_prob:
+                problems_text = '\n'.join([f"- {r.get('Сообщение','')[:50]}" for r in week_prob[-3:]])
+        except: pass
+
+        # Критичные остатки
+        out_of_stock = []
+        try:
+            ws_ost = sh.worksheet('Остатки')
+            rows_ost = ws_ost.get_all_records()
+            last_date = max([r.get('Дата','') for r in rows_ost if r.get('Дата','')], default='')
+            if last_date:
+                last_rows = [r for r in rows_ost if str(r.get('Дата','')) == last_date or not r.get('Дата','')]
+                out_of_stock = [r.get('Продукт','') for r in last_rows if r.get('Примечание','') == 'Out of stock']
+        except: pass
+
+        profit = total_revenue - total_expenses
+        profit_sign = '+' if profit >= 0 else ''
+
+        resp = claude.messages.create(
+            model='claude-haiku-4-5',
+            max_tokens=800,
+            system='Составь короткую еженедельную сводку для владельца кофейни на русском языке. Будь конкретным и кратким. Максимум 15 строк.',
+            messages=[{'role': 'user', 'content': f"""Данные за неделю ({week_ago} — {date_today}):
+Выручка: {total_revenue:.0f} THB
+Расходы: {total_expenses:.0f} THB
+Прибыль: {profit_sign}{profit:.0f} THB
+Проблемы: {problems_text or 'не зафиксировано'}
+Закончилось: {', '.join(out_of_stock[:5]) or 'всё в норме'}
+
+Формат:
+📊 Итоги недели [даты]
+💰 Выручка: X THB
+💸 Расходы: X THB
+📈 Прибыль: X THB
+⚠️ Проблемы: список или 'нет'
+🔴 Закончилось: список или 'всё ок'
+💡 Вывод: 1-2 предложения"""}]
+        )
+        notify_owner(client_cfg, resp.content[0].text.strip())
+    except Exception as e:
+        print(f"Weekly report error: {e}")
+
+
 def morning_report(client_cfg):
     global _last_report
     bot_id = client_cfg.get("owner_line_id","")
@@ -323,6 +401,8 @@ def webhook():
             _msg = event.get('message', {})
             if _msg.get('type') == 'text' and _msg.get('text','').lower().strip() in ['сводка','отчет','отчёт','report']:
                 morning_report(client_cfg)
+            elif _msg.get('text','').lower().strip() in ['неделя','week','недельная']:
+                weekly_report(client_cfg)
             continue
         msg = event.get('message', {})
         msg_type = msg.get('type')
@@ -456,6 +536,7 @@ try:
     for bot_id, cfg in CLIENTS.items():
         if cfg.get('sheet_id') and gc:
             scheduler.add_job(morning_report, 'cron', hour=9, minute=0, args=[cfg], id=f"morning_{bot_id}")
+            scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
     scheduler.start()
     print("Scheduler started")
 except Exception as e:
