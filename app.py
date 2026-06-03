@@ -131,7 +131,7 @@ def check_price_drift(sheet_id, items, supplier, client_cfg):
         for item in items:
             name = item.get('description', '').strip()
             try:
-                price = float(str(item.get('amount', 0) or 0).replace('฿','').replace(',','').strip() or 0)
+                price = float(str(item.get('unit_price', item.get('amount', 0)) or 0).replace('฿','').replace(',','').strip() or 0)
             except:
                 price = 0
             if not name or price <= 0:
@@ -176,7 +176,7 @@ def analyze_image(image_data, client_cfg):
 Верни ТОЛЬКО JSON: {{"doc_type":"shift","shift":"номер смены","gross_sales":число,"cash":число,"card":число,"qr":число,"difference":число,"note":""}}
 
 Если это НАКЛАДНАЯ от поставщика:
-Верни ТОЛЬКО JSON: {{"doc_type":"invoice","supplier":"поставщик","items":[{{"description":"позиция на русском","amount":"цена за единицу (Unit Price, не итог)"}}],"total":"итого","note":""}}
+Верни ТОЛЬКО JSON: {{"doc_type":"invoice","supplier":"поставщик","items":[{{"description":"позиция на русском","unit_price":"цена за единицу (Unit Price)","amount":"общая сумма по позиции (Amount)"}}],"total":"итого","note":""}}
 
 Если это ЧЕК или фото покупки:
 Верни ТОЛЬКО JSON: {{"doc_type":"expense","supplier":"магазин","items":[{{"description":"что купили на русском","amount":"сумма"}}],"total":"итого","note":""}}
