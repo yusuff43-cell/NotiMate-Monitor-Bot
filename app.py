@@ -238,13 +238,14 @@ def morning_report(client_cfg):
             rows_exp = ws_exp.get_all_records()
             yest_exp = [r for r in rows_exp if str(r.get('Дата','')) == yesterday]
             total_yesterday = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in yest_exp)
-            recent = rows_exp[-100:] if len(rows_exp) > 100 else rows_exp
-            total_recent = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in recent)
+            month_start = now.strftime('%Y-%m')
+            month_exp = [r for r in rows_exp if str(r.get('Дата','')).startswith(month_start)]
+            total_recent = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in month_exp)
         except: pass
         остатки_текст = "\n".join([f"{r.get('Продукт','')} | Холодильник: {r.get('Холодильник','')} | Морозилка: {r.get('Морозилка','')} | {r.get('Примечание','')}" for r in today_rows if r.get('Продукт')])
         resp = claude.messages.create(
             model="claude-haiku-4-5", max_tokens=1000,
-            system="Ты аналитик кафе. Составь утреннюю сводку на русском.\nФормат:\n☀️ Доброе утро! Сводка по кофейне [дата]\n🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:\n- список\n🟡 МАЛО ОСТАЛОСЬ (1-2 шт):\n- список\n💰 РАСХОДЫ ВЧЕРА: X THB\n📊 РАСХОДЫ (последние записи): X THB\n💡 РЕКОМЕНДАЦИИ:\n- 2-3 совета",
+            system="Ты аналитик кафе. Составь утреннюю сводку на русском.\nФормат:\n☀️ Доброе утро! Сводка по кофейне [дата]\n🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:\n- список\n🟡 МАЛО ОСТАЛОСЬ (1-2 шт):\n- список\n💰 РАСХОДЫ ВЧЕРА: X THB\n📊 РАСХОДЫ ЗА МЕСЯЦ: X THB\n💡 РЕКОМЕНДАЦИИ:\n- 2-3 совета",
             messages=[{"role": "user", "content": f"Дата: {date_today}\nОстатки:\n{остатки_текст}\nРасходы вчера: {total_yesterday} THB\nРасходы последние: {total_recent} THB"}]
         )
         notify_owner(client_cfg, resp.content[0].text.strip())
