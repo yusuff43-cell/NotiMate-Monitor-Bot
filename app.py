@@ -269,7 +269,7 @@ def weekly_report(client_cfg):
         try:
             ws_rev = sh.worksheet('Выручка')
             rows_rev = ws_rev.get_all_records()
-            week_rev = [r for r in rows_rev if str(r.get('Дата','')).strip() >= week_ago]
+            week_rev = [r for r in rows_rev if str(r.get('Дата','')).strip()[:10] >= week_ago]
             total_revenue = sum(float(str(r.get('Gross Sales',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in week_rev)
         except: pass
 
@@ -278,7 +278,7 @@ def weekly_report(client_cfg):
         try:
             ws_exp = sh.worksheet('Расходы')
             rows_exp = ws_exp.get_all_records()
-            week_exp = [r for r in rows_exp if str(r.get('Дата','')).strip() >= week_ago]
+            week_exp = [r for r in rows_exp if str(r.get('Дата','')).strip()[:10] >= week_ago]
             total_expenses = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in week_exp)
         except: pass
 
@@ -287,7 +287,7 @@ def weekly_report(client_cfg):
         try:
             ws_prob = sh.worksheet('Проблемы')
             rows_prob = ws_prob.get_all_records()
-            week_prob = [r for r in rows_prob if str(r.get('Дата','')).strip() >= week_ago]
+            week_prob = [r for r in rows_prob if str(r.get('Дата','')).strip()[:10] >= week_ago]
             if week_prob:
                 problems_text = '\n'.join([f"- {r.get('Сообщение','')[:50]}" for r in week_prob[-3:]])
         except: pass
