@@ -179,7 +179,8 @@ def analyze_text(text, client_cfg):
 
 ТИПЫ СООБЩЕНИЙ:
 
-1. ЗАКУПКИ - "we need", "for tomorrow", "need", "order" в начале
+1. ЗАКУПКИ - "we need", "for tomorrow", "need", "order" в начале БЕЗ цены
+Если есть сумма (฿, =число฿) — это РАСХОД (тип 4), не закупка
 Верни ТОЛЬКО JSON: {{"type":"purchase","items":[{{"product":"название на русском","quantity":"количество"}}]}}
 
 2. ОСТАТКИ - начинаются с "Update"
@@ -190,7 +191,7 @@ def analyze_text(text, client_cfg):
 Верни ТОЛЬКО JSON: {{"type":"single_stock","product":"название на русском","amount":"количество"}}
 
 4. РАСХОД - покупка с подтверждением (bought, paid, total, ฿, -)
-Триггеры: "bought","paid","total","spent","-число฿ for", минус перед суммой
+Триггеры: "bought","paid","total","spent","-число฿ for", минус перед суммой, "=число฿", просто "число฿" или "฿число"
 Верни ТОЛЬКО JSON: {{"type":"text_expense","supplier":"магазин","items":[{{"description":"что купили на русском"}}],"total":"сумма"}}
 
 5. ПРОБЛЕМА - поломки, аварии, инциденты
@@ -207,7 +208,15 @@ def analyze_text(text, client_cfg):
             raise e
 
 # ── Утренняя сводка ──────────────────────────────────────────────
+_last_report = {}
 def morning_report(client_cfg):
+    global _last_report
+    bot_id = client_cfg.get("owner_line_id","")
+    today = datetime.datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y-%m-%d")
+    if _last_report.get(bot_id) == today:
+        print("Morning report already sent today, skipping")
+        return
+    _last_report[bot_id] = today
     try:
         tz = pytz.timezone('Asia/Bangkok')
         now = datetime.datetime.now(tz)
