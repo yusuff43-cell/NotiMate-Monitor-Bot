@@ -117,6 +117,50 @@ def notify_owner(client_cfg, msg):
         print(f"Notify error: {e}")
 
 # ── Анализ фото ──────────────────────────────────────────────────
+def check_price_drift(sheet_id, items, supplier, client_cfg):
+    """Проверяет дрейф цен и уведомляет если цена выросла >10%"""
+    if not gc:
+        return
+    try:
+        sh = gc.open_by_key(sheet_id)
+        headers = ['Дата', 'Поставщик', 'Позиция', 'Цена (THB)']
+        ws = get_or_create_sheet(sh, 'Цены', headers)
+        rows = ws.get_all_records()
+        alerts = []
+        date_today = datetime.datetime.now().strftime('%Y-%m-%d')
+        for item in items:
+            name = item.get('description', '').strip()
+            try:
+                price = float(str(item.get('amount', 0) or 0).replace('฿','').replace(',','').strip() or 0)
+            except:
+                price = 0
+            if not name or price <= 0:
+                continue
+            # Ищем последнюю цену этой позиции
+            prev_price = None
+            for row in reversed(rows):
+                if row.get('Позиция','').lower() == name.lower():
+                    try:
+                        prev_price = float(str(row.get('Цена (THB)', 0) or 0).replace('฿','').replace(',','').strip() or 0)
+                    except:
+                        prev_price = None
+                    break
+            # Записываем новую цену
+            ws.append_row([date_today, supplier, name, price])
+            # Проверяем дрейф
+            if prev_price and prev_price > 0 and price > 0:
+                drift = (price - prev_price) / prev_price * 100
+                if drift >= 10:
+                    alerts.append(f"- {name}: {prev_price:.0f} → {price:.0f} THB (+{drift:.0f}%)")
+        if alerts:
+            msg = f"⚠️ ДРЕЙФ ЦЕН от {supplier}:\n"
+            msg += "\n".join(alerts)
+            msg += "\n\n💡 Проверьте накладную — поставщик поднял цены."
+            notify_owner(client_cfg, msg)
+    except Exception as e:
+        print(f"Price drift error: {e}")
+
+
 def analyze_image(image_data, client_cfg):
     lang = client_cfg.get('notification_language', 'russian')
     lang_map = {'russian': 'Отвечай ТОЛЬКО на русском языке.', 'thai': 'ตอบเป็นภาษาไทยเท่านั้น', 'english': 'Reply in English only.'}
@@ -365,6 +409,7 @@ def webhook():
                     notify_owner(client_cfg, msg_text)
                 elif doc_type == 'invoice':
                     save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
+                    check_price_drift(client_cfg['sheet_id'], data.get('items',[]), data.get('supplier',''), client_cfg)
                     notify_owner(client_cfg, f"🧾 НАКЛАДНАЯ записана\nПоставщик: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
                 elif doc_type == 'expense':
                     save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
