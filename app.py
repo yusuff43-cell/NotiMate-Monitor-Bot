@@ -176,7 +176,7 @@ def analyze_image(image_data, client_cfg):
 Верни ТОЛЬКО JSON: {{"doc_type":"shift","shift":"номер смены","gross_sales":число,"cash":число,"card":число,"qr":число,"difference":число,"note":""}}
 
 Если это НАКЛАДНАЯ от поставщика:
-Верни ТОЛЬКО JSON: {{"doc_type":"invoice","supplier":"поставщик","items":[{{"description":"позиция на русском","amount":"сумма"}}],"total":"итого","note":""}}
+Верни ТОЛЬКО JSON: {{"doc_type":"invoice","supplier":"поставщик","items":[{{"description":"позиция на русском","amount":"цена за единицу (Unit Price, не итог)"}}],"total":"итого","note":""}}
 
 Если это ЧЕК или фото покупки:
 Верни ТОЛЬКО JSON: {{"doc_type":"expense","supplier":"магазин","items":[{{"description":"что купили на русском","amount":"сумма"}}],"total":"итого","note":""}}
