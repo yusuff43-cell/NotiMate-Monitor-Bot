@@ -279,7 +279,10 @@ def weekly_report(client_cfg):
             ws_exp = sh.worksheet('Расходы')
             rows_exp = ws_exp.get_all_records()
             week_exp = [r for r in rows_exp if str(r.get('Дата','')).strip()[:10] >= week_ago]
-            total_expenses = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in week_exp)
+            def safe_float(v):
+                try: return float(str(v or 0).replace('฿','').replace(',','').replace('B','').strip() or 0)
+                except: return 0
+            total_expenses = sum(safe_float(r.get('Сумма (THB)',0)) for r in week_exp)
         except: pass
 
         # Проблемы за неделю
