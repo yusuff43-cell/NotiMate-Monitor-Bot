@@ -85,7 +85,11 @@ def save_закупки(sheet_id, items, date_str):
     last_date = get_last_date(ws)
     # Получаем уже записанные сегодня продукты
     existing = ws.get_all_records()
-    today_names = [r.get('Продукт','').lower().strip() for r in existing if str(r.get('Дата','')).startswith(date_str)]
+    # Дата пишется только в первую строку, остальные пустые - берём все записи начиная с последней даты
+    last_date_in_sheet = get_last_date(ws)
+    today_names = []
+    if last_date_in_sheet and last_date_in_sheet.startswith(date_str):
+        today_names = [r.get('Продукт','').lower().strip() for r in existing if r.get('Продукт','')]
     incoming_names = [i.get('product','').lower().strip() for i in items]
     # Если входящий список совпадает с сегодняшним на 60%+ — это обновление
     if today_names and incoming_names:
