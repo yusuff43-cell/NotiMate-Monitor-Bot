@@ -94,7 +94,7 @@ def save_закупки(sheet_id, items, date_str):
         words = [w for w in product.lower().split() if len(w) > 3]
         return any(w in today_words for w in words)
     new_items = [i for i in items if not is_duplicate(i.get('product',''))]
-    print(f'save_закупки: today={today_products}, new_items={[i.get("product") for i in new_items]}')
+    print(f'save_закупки: today_words={today_words}, new_items={[i.get("product") for i in new_items]}')
     if not new_items:
         print('No new items, skipping')
         return
