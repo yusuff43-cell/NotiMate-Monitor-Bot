@@ -98,7 +98,7 @@ def save_закупки(sheet_id, items, date_str):
             new_items = items
     else:
         new_items = items
-    print(f'save_закупки: today_words={today_words}, new_items={[i.get("product") for i in new_items]}')
+
     if not new_items:
         print('No new items, skipping')
         return
