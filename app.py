@@ -143,6 +143,8 @@ def notify_owner(client_cfg, msg):
     try:
         api = get_line_api(client_cfg['channel_access_token'])
         api.push_message(client_cfg['owner_line_id'], TextSendMessage(text=msg))
+        if client_cfg.get('owner_line_id_2'):
+            api.push_message(client_cfg['owner_line_id_2'], TextSendMessage(text=msg))
     except Exception as e:
         print(f"Notify error: {e}")
 
