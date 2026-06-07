@@ -230,7 +230,7 @@ def analyze_text(text, client_cfg):
 
 ТИПЫ СООБЩЕНИЙ:
 
-1. ЗАКУПКИ - "we need", "for tomorrow", "need", "order" в начале БЕЗ цены
+1. ЗАКУПКИ - сообщения со списком продуктов для заказа. Триггеры в начале: "we need", "for tomorrow", "need", "order". ИЛИ просто список продуктов с количествами без цен (каждая строка = продукт + количество).
 Если есть сумма (฿, =число฿) — это РАСХОД (тип 4), не закупка
 Верни ТОЛЬКО JSON: {{"type":"purchase","items":[{{"product":"название на русском","quantity":"количество"}}]}}
 
@@ -467,7 +467,8 @@ def webhook():
                     if gc:
                         sh = gc.open_by_key(client_cfg['sheet_id'])
                         ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
-                        ws.append_row([date_only, 'Закупка', supplier, positions, total, ''])
+                        clean_total = str(total or '').replace('฿','').replace('B','').replace(',','').strip()
+                        ws.append_row([date_only, 'Закупка', supplier, positions, clean_total, ''])
                     notify_owner(client_cfg, f"💸 РАСХОД записан:\nМагазин: {supplier}\nПозиции: {positions}\nИтого: {total} THB")
             except Exception as e:
                 print(f"Text handler error: {e}")
