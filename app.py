@@ -85,15 +85,19 @@ def save_закупки(sheet_id, items, date_str):
     last_date = get_last_date(ws)
     # Получаем уже записанные сегодня продукты
     existing = ws.get_all_records()
-    today_words = set()
-    for r in existing:
-        if str(r.get('Дата','')).startswith(date_str):
-            for w in r.get('Продукт','').lower().split():
-                if len(w) > 3: today_words.add(w)
-    def is_duplicate(product):
-        words = [w for w in product.lower().split() if len(w) > 3]
-        return any(w in today_words for w in words)
-    new_items = [i for i in items if not is_duplicate(i.get('product',''))]
+    today_names = [r.get('Продукт','').lower().strip() for r in existing if str(r.get('Дата','')).startswith(date_str)]
+    incoming_names = [i.get('product','').lower().strip() for i in items]
+    # Если входящий список совпадает с сегодняшним на 60%+ — это обновление
+    if today_names and incoming_names:
+        matches = sum(1 for n in incoming_names if any(n[:4] in t or t[:4] in n for t in today_names if len(t) > 3))
+        overlap = matches / len(incoming_names)
+        if overlap >= 0.6:
+            # Добавляем только действительно новые позиции
+            new_items = [i for i in items if not any(i.get('product','').lower().strip()[:4] in t or t[:4] in i.get('product','').lower().strip() for t in today_names if len(t) > 3)]
+        else:
+            new_items = items
+    else:
+        new_items = items
     print(f'save_закупки: today_words={today_words}, new_items={[i.get("product") for i in new_items]}')
     if not new_items:
         print('No new items, skipping')
@@ -235,7 +239,7 @@ def analyze_text(text, client_cfg):
                 system=f"""КРИТИЧЕСКИ ВАЖНО: Только анализируй сообщения по правилам. Если не подходит — верни ТОЛЬКО: IGNORE
 {lang_instruction}
 
-СЛОВАРЬ: Clear/Clear croissant=Масляный круассан, Chocolate=Шоколадный круассан, Almond=Миндальный круассан, Ham Cheese=Круассан с ветчиной и сыром, Cheesecake=Чизкейк, Biscoff cheesecake=Бискофф чизкейк, Cheese pancakes=Сырники, Mango cheese pancakes=Манговые сырники, Cucumber cheese pancakes=Огуречные сырники, Crepes=Шпинатные блинчики, Pancakes=Панкейки, Crepes burger=Блины для бургера, Pannacotta=Панна-котта, Chocolate mousse=Шоколадный мусс, Salted Caramel=Солёная карамель, Bounty=Баунти, Halva=Халва, Marzipan=Марципан, Brownie=Брауни, Banana bread=Банановый хлеб, Muffin=Маффин, Snickers=Сникерс, Napoleons=Наполеон, Sourdough=Хлеб на закваске (для брускет), Banana=Банан (не банановый хлеб), Dragon fruit=Драгон фрут, Salmon=Лосось, Yogurt=Йогурт, Açaí=Асаи
+СЛОВАРЬ: Clear/Clear croissant=Масляный круассан, Chocolate=Шоколадный круассан, Almond=Миндальный круассан, Ham Cheese=Круассан с ветчиной и сыром, Cheesecake=Чизкейк, Biscoff cheesecake=Бискофф чизкейк, Cheese pancakes=Сырники, Mango cheese pancakes=Манговые сырники, Cucumber cheese pancakes=Огуречные сырники, Crepes=Шпинатные блинчики, Pancakes=Панкейки, Crepes burger=Блины для бургера, Pannacotta=Панна-котта, Chocolate mousse=Шоколадный мусс, Salted Caramel=Солёная карамель, Bounty=Баунти, Halva=Халва, Marzipan=Марципан, Brownie=Брауни, Banana bread=Банановый хлеб, Muffin=Маффин, Snickers=Сникерс, Napoleons=Наполеон, Sourdough=Хлеб на закваске (для брускет), Banana=Банан (не банановый хлеб), Coconut velvet=Кокосовое молоко велюр, Coconut milk velvet=Кокосовое молоко велюр, Dragon fruit=Драгон фрут, Salmon=Лосось, Yogurt=Йогурт, Açaí=Асаи
 
 ТИПЫ СООБЩЕНИЙ:
 
