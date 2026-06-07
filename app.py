@@ -83,7 +83,13 @@ def save_закупки(sheet_id, items, date_str):
     headers = ['Дата', 'Продукт', 'Количество']
     ws = get_or_create_sheet(sh, 'Закупки', headers)
     last_date = get_last_date(ws)
-    for i, item in enumerate(items):
+    # Получаем уже записанные сегодня продукты
+    existing = ws.get_all_records()
+    today_products = set(r.get('Продукт','').lower().strip() for r in existing if str(r.get('Дата','')).startswith(date_str))
+    new_items = [i for i in items if i.get('product','').lower().strip() not in today_products]
+    if not new_items:
+        return
+    for i, item in enumerate(new_items):
         date_cell = date_str if (i == 0 and last_date != date_str) else ''
         ws.append_row([date_cell, item.get('product',''), item.get('quantity','')])
 
@@ -93,7 +99,8 @@ def save_расходы(sheet_id, items, date_str, supplier, note=''):
     headers = ['Дата', 'Тип', 'Поставщик/Магазин', 'Позиция', 'Сумма (THB)', 'Примечание']
     ws = get_or_create_sheet(sh, 'Расходы', headers)
     for item in items:
-        ws.append_row([date_str, item.get('type','Закупка'), supplier, item.get('description',''), item.get('amount',''), note])
+        clean_amount = str(item.get('amount','') or '').replace('฿','').replace('B','').replace(',','').strip()
+        ws.append_row([date_str, item.get('type','Закупка'), supplier, item.get('description',''), clean_amount, note])
 
 def save_выручка(sheet_id, data, date_str, note=''):
     if not gc: return
@@ -538,7 +545,7 @@ try:
     scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Bangkok'))
     for bot_id, cfg in CLIENTS.items():
         if cfg.get('sheet_id') and gc:
-            scheduler.add_job(morning_report, 'cron', hour=9, minute=0, args=[cfg], id=f"morning_{bot_id}")
+            scheduler.add_job(morning_report, 'cron', hour=8, minute=5, args=[cfg], id=f"morning_{bot_id}")
             scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
     scheduler.start()
     print("Scheduler started")
