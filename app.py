@@ -216,6 +216,9 @@ def analyze_image(image_data, client_cfg):
 Если это БАНКОВСКИЙ ПЕРЕВОД сотруднику (Transfer Completed, KBIZ, SCB):
 Верни ТОЛЬКО JSON: {{"doc_type":"salary","recipient":"имя получателя","amount":0,"note":""}}
 
+Если это ДОКУМЕНТ С ДАТОЙ ОКОНЧАНИЯ (лицензия, разрешение, аренда, страховка, сертификат):
+Верни ТОЛЬКО JSON: {{"doc_type":"reminder","title":"название документа на русском","expiry_date":"YYYY-MM-DD","note":""}}
+
 Если это ОБЪЯВЛЕНИЕ или УВЕДОМЛЕНИЕ:
 Верни ТОЛЬКО JSON: {{"doc_type":"notice","title":"заголовок","content":"перевод","note":""}}
 
@@ -405,7 +408,26 @@ def morning_report(client_cfg):
             system="Ты аналитик кафе. Составь утреннюю сводку на русском.\nФормат:\n☀️ Доброе утро! Сводка по кофейне [дата]\n🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:\n- список\n🟡 МАЛО ОСТАЛОСЬ (1-2 шт):\n- список\n💰 РАСХОДЫ ВЧЕРА: X THB\n📊 РАСХОДЫ ЗА МЕСЯЦ: X THB\n💡 РЕКОМЕНДАЦИИ:\n- 2-3 совета",
             messages=[{"role": "user", "content": f"Дата: {date_today}\nОстатки:\n{остатки_текст}\nРасходы вчера: {total_yesterday} THB\nРасходы последние: {total_recent} THB"}]
         )
-        notify_owner(client_cfg, resp.content[0].text.strip())
+        # Проверяем напоминания
+        reminders_alert = ''
+        try:
+            ws_rem = sh.worksheet('Напоминания')
+            rows_rem = ws_rem.get_all_records()
+            for r in rows_rem:
+                expiry = r.get('Дата окончания', '')
+                if not expiry: continue
+                try:
+                    exp_date = datetime.datetime.strptime(str(expiry)[:10], '%Y-%m-%d')
+                    days_left = (exp_date - datetime.datetime.now(tz)).days
+                    if 0 <= days_left <= 7:
+                        reminders_alert += f"\n⚠️ {r.get('Название','?')} — истекает через {days_left} дн. ({expiry})"
+                except: pass
+        except: pass
+
+        msg = resp.content[0].text.strip()
+        if reminders_alert:
+            msg += f"\n\n🔔 ВАЖНЫЕ ДОКУМЕНТЫ:{reminders_alert}"
+        notify_owner(client_cfg, msg)
     except Exception as e:
         print(f"Morning report error: {e}")
 
@@ -536,6 +558,12 @@ def webhook():
                         ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
                         ws.append_row([date_only, data.get('recipient',''), data.get('amount',''), data.get('note','')])
                     notify_owner(client_cfg, f"💼 ЗАРПЛАТА записана\nПолучатель: {data.get('recipient','—')}\nСумма: {data.get('amount','—')} THB")
+                elif doc_type == 'reminder':
+                    if gc:
+                        sh = gc.open_by_key(client_cfg['sheet_id'])
+                        ws = get_or_create_sheet(sh, 'Напоминания', ['Название', 'Дата окончания', 'Дата добавления', 'Примечание'])
+                        ws.append_row([data.get('title',''), data.get('expiry_date',''), date_only, data.get('note','')])
+                    notify_owner(client_cfg, f"📅 НАПОМИНАНИЕ записано\n📄 {data.get('title','—')}\n⏰ Истекает: {data.get('expiry_date','—')}")
                 elif doc_type == 'notice':
                     notify_owner(client_cfg, f"⚡️ ВАЖНОЕ УВЕДОМЛЕНИЕ\n\n{data.get('title','')}\n\n{data.get('content','')}")
                 elif doc_type == 'bank_history':
