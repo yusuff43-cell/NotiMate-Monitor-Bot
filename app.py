@@ -85,8 +85,15 @@ def save_закупки(sheet_id, items, date_str):
     last_date = get_last_date(ws)
     # Получаем уже записанные сегодня продукты
     existing = ws.get_all_records()
-    today_products = set(r.get('Продукт','').lower().strip()[:5] for r in existing if str(r.get('Дата','')).startswith(date_str))
-    new_items = [i for i in items if i.get('product','').lower().strip()[:5] not in today_products]
+    today_words = set()
+    for r in existing:
+        if str(r.get('Дата','')).startswith(date_str):
+            for w in r.get('Продукт','').lower().split():
+                if len(w) > 3: today_words.add(w)
+    def is_duplicate(product):
+        words = [w for w in product.lower().split() if len(w) > 3]
+        return any(w in today_words for w in words)
+    new_items = [i for i in items if not is_duplicate(i.get('product',''))]
     print(f'save_закупки: today={today_products}, new_items={[i.get("product") for i in new_items]}')
     if not new_items:
         print('No new items, skipping')
