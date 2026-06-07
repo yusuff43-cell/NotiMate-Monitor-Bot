@@ -87,7 +87,9 @@ def save_закупки(sheet_id, items, date_str):
     existing = ws.get_all_records()
     today_products = set(r.get('Продукт','').lower().strip()[:5] for r in existing if str(r.get('Дата','')).startswith(date_str))
     new_items = [i for i in items if i.get('product','').lower().strip()[:5] not in today_products]
+    print(f'save_закупки: today={today_products}, new_items={[i.get("product") for i in new_items]}')
     if not new_items:
+        print('No new items, skipping')
         return
     for i, item in enumerate(new_items):
         date_cell = date_str if (i == 0 and last_date != date_str) else ''
@@ -238,7 +240,7 @@ def analyze_text(text, client_cfg):
 Верни ТОЛЬКО JSON: {{"type":"stock","items":[{{"category":"Круассаны/Десерты/Блины и сырники/Макаруны/Начинки/Другое","product":"название на русском","fridge":"","freezer":"","note":""}}]}}
 Правила note: "Out of stock" если всё 0, "Low stock" если 1-2 шт, "Exp today" если помечено
 
-3. ОСТАТОК ОДНОЙ ПОЗИЦИИ - "товар have/has количество" или "товар количество г/pcs"
+3. ОСТАТОК ОДНОЙ ПОЗИЦИИ - "товар have/has количество" или "товар количество г/pcs". БЕЗ цены (฿). Если есть ฿ — это РАСХОД (тип 4)
 Верни ТОЛЬКО JSON: {{"type":"single_stock","product":"название на русском","amount":"количество"}}
 
 4. РАСХОД - покупка с подтверждением (bought, paid, total, ฿, -)
