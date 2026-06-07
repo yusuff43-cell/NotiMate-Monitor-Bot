@@ -89,7 +89,13 @@ def save_закупки(sheet_id, items, date_str):
     last_date_in_sheet = get_last_date(ws)
     today_names = []
     if last_date_in_sheet and last_date_in_sheet.startswith(date_str):
-        today_names = [r.get('Продукт','').lower().strip() for r in existing if r.get('Продукт','')]
+        # Берём только записи последней группы (после последней даты)
+        last_idx = 0
+        for idx, r in enumerate(existing):
+            if str(r.get('Дата','')).startswith(date_str):
+                last_idx = idx
+                break
+        today_names = [r.get('Продукт','').lower().strip() for r in existing[last_idx:] if r.get('Продукт','')]
     incoming_names = [i.get('product','').lower().strip() for i in items]
     # Если входящий список совпадает с сегодняшним на 60%+ — это обновление
     if today_names and incoming_names:
