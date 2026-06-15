@@ -369,6 +369,71 @@ def weekly_report(client_cfg):
         print(f"Weekly report error: {e}")
 
 
+def daily_digest(client_cfg):
+    """Дневной дайджест в 18:00 по Бангкоку"""
+    if not gc:
+        return
+    try:
+        tz = pytz.timezone('Asia/Bangkok')
+        date_today = datetime.datetime.now(tz).strftime('%Y-%m-%d')
+        sh = gc.open_by_key(client_cfg['sheet_id'])
+        msg = f"📊 Итоги дня {datetime.datetime.now(tz).strftime('%d.%m')}\n"
+
+        # Выручка смены
+        try:
+            ws_rev = sh.worksheet('Выручка')
+            rows_rev = ws_rev.get_all_records()
+            today_rev = [r for r in rows_rev if str(r.get('Дата','')).startswith(date_today)]
+            if today_rev:
+                for r in today_rev:
+                    msg += f"\n💰 Смена #{r.get('Смена','?')}: {r.get('Gross Sales','')} THB"
+                    if r.get('Наличные'): msg += f"\n   Нал: {r.get('Наличные','')} | Карта: {r.get('Карта','')} | QR: {r.get('QR','')}"
+        except: pass
+
+        # Расходы за день
+        try:
+            ws_exp = sh.worksheet('Расходы')
+            rows_exp = ws_exp.get_all_records()
+            today_exp = [r for r in rows_exp if str(r.get('Дата','')).startswith(date_today)]
+            if today_exp:
+                total_exp = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in today_exp)
+                msg += f"\n\n💸 Расходы за день: {total_exp:.0f} THB"
+                for r in today_exp[:5]:
+                    if r.get('Сумма (THB)'):
+                        msg += f"\n   - {r.get('Поставщик/Магазин','?')}: {r.get('Сумма (THB)','')} THB"
+                if len(today_exp) > 5:
+                    msg += f"\n   + ещё {len(today_exp)-5} позиций"
+        except: pass
+
+        # Закупки за день
+        try:
+            ws_pur = sh.worksheet('Закупки')
+            rows_pur = ws_pur.get_all_records()
+            last_date = None
+            for r in reversed(rows_pur):
+                if r.get('Дата',''):
+                    last_date = str(r.get('Дата',''))
+                    break
+            if last_date and last_date.startswith(date_today):
+                count = sum(1 for r in rows_pur if r.get('Продукт',''))
+                msg += f"\n\n🛒 Закупки оформлены"
+        except: pass
+
+        # Зарплаты за день
+        try:
+            ws_sal = sh.worksheet('Зарплаты')
+            rows_sal = ws_sal.get_all_records()
+            today_sal = [r for r in rows_sal if str(r.get('Дата','')).startswith(date_today)]
+            if today_sal:
+                total_sal = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in today_sal)
+                msg += f"\n\n💼 Зарплаты выплачены: {total_sal:.0f} THB"
+        except: pass
+
+        notify_owner(client_cfg, msg)
+    except Exception as e:
+        print(f"Daily digest error: {e}")
+
+
 def morning_report(client_cfg):
     global _last_report
     bot_id = client_cfg.get("owner_line_id","")
@@ -487,7 +552,7 @@ def webhook():
                     msg_text = "🛒 ЗАКУПКА записана:\n"
                     for item in data['items']:
                         msg_text += f"- {item['product']}: {item['quantity']}\n"
-                    notify_owner(client_cfg, msg_text)
+                    # уведомление в дайджесте 18:00
                 elif data['type'] == 'stock':
                     save_остатки(client_cfg['sheet_id'], data['items'], date_only)
                     out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
@@ -600,6 +665,7 @@ try:
     for bot_id, cfg in CLIENTS.items():
         if cfg.get('sheet_id') and gc:
             scheduler.add_job(morning_report, 'cron', hour=8, minute=5, args=[cfg], id=f"morning_{bot_id}")
+            scheduler.add_job(daily_digest, 'cron', hour=18, minute=0, args=[cfg], id=f"daily_{bot_id}")
             scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
     scheduler.start()
     print("Scheduler started")
