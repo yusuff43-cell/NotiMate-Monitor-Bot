@@ -1,0 +1,6 @@
+{
+  "client_name": {
+    "channel_access_token": "your_token_here",
+    "channel_secret": "your_secret_here"
+  }
+}
