@@ -13,6 +13,9 @@ from linebot.v3.messaging import (
     MessagingApi,
     MessagingApiBlob,
     PushMessageRequest,
+    MessageAction,
+    QuickReply,
+    QuickReplyItem,
     TextMessage,
 )
 from openai import APIStatusError, OpenAI, RateLimitError
@@ -204,12 +207,18 @@ def save_проблемы(sheet_id, text, result, date_str):
     ws = get_or_create_sheet(sh, 'Проблемы', headers)
     ws.append_row([date_str, text, result])
 
-def notify_owner(client_cfg, msg):
+def notify_owner(client_cfg, msg, with_actions=False):
     try:
         api = get_line_api(client_cfg['channel_access_token'])
-        api.push_message(PushMessageRequest(to=client_cfg['owner_line_id'], messages=[TextMessage(text=msg)]))
+        quick_reply = owner_quick_actions() if with_actions else None
+        recipients = [client_cfg['owner_line_id']]
         if client_cfg.get('owner_line_id_2'):
-            api.push_message(PushMessageRequest(to=client_cfg['owner_line_id_2'], messages=[TextMessage(text=msg)]))
+            recipients.append(client_cfg['owner_line_id_2'])
+        for recipient in recipients:
+            api.push_message(PushMessageRequest(
+                to=recipient,
+                messages=[TextMessage(text=msg, quick_reply=quick_reply)],
+            ))
         return True
     except Exception as e:
         print(f"Notify error: {e}")
@@ -418,131 +427,148 @@ def weekly_report(client_cfg):
         print(f"Weekly report error: {e}")
 
 
-def daily_digest(client_cfg):
-    """Дневной дайджест в 18:00 по Бангкоку"""
+def _money(value):
+    try:
+        return float(str(value or 0).replace('฿', '').replace(',', '').replace('B', '').strip() or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def owner_quick_actions():
+    return QuickReply(items=[
+        QuickReplyItem(action=MessageAction(label='Подробный отчёт', text='подробный отчёт')),
+        QuickReplyItem(action=MessageAction(label='Деньги', text='деньги')),
+        QuickReplyItem(action=MessageAction(label='Напоминания', text='напоминания')),
+    ])
+
+
+def upcoming_reminders(sh, now, days_limit=14, limit=5):
+    try:
+        rows = sh.worksheet('Напоминания').get_all_records()
+    except Exception:
+        return []
+    reminders = []
+    for row in rows:
+        expiry = str(row.get('Дата окончания', '')).strip()
+        title = str(row.get('Название', '')).strip()
+        if not expiry or not title:
+            continue
+        try:
+            left = days_until(expiry, now=now)
+        except Exception:
+            continue
+        if 0 <= left <= days_limit:
+            reminders.append((left, title, expiry))
+    return sorted(reminders)[:limit]
+
+
+def evening_summary(client_cfg):
+    """Короткая сводка для владельца в 20:00 по Бангкоку."""
     if not gc:
         return
     try:
         tz = pytz.timezone('Asia/Bangkok')
-        date_today = datetime.datetime.now(tz).strftime('%Y-%m-%d')
+        now = datetime.datetime.now(tz)
+        date_today = now.strftime('%Y-%m-%d')
+        month_prefix = now.strftime('%Y-%m')
         sh = gc.open_by_key(client_cfg['sheet_id'])
-        msg = f"📊 Итоги дня {datetime.datetime.now(tz).strftime('%d.%m')}\n"
 
-        # Выручка смены
+        revenue_today = revenue_month = expenses_today = expenses_month = 0.0
         try:
-            ws_rev = sh.worksheet('Выручка')
-            rows_rev = ws_rev.get_all_records()
-            today_rev = [r for r in rows_rev if str(r.get('Дата','')).startswith(date_today)]
-            if today_rev:
-                for r in today_rev:
-                    msg += f"\n💰 Смена #{r.get('Смена','?')}: {r.get('Gross Sales','')} THB"
-                    if r.get('Наличные'): msg += f"\n   Нал: {r.get('Наличные','')} | Карта: {r.get('Карта','')} | QR: {r.get('QR','')}"
-        except: pass
-
-        # Расходы за день
+            rows = sh.worksheet('Выручка').get_all_records()
+            revenue_today = sum(_money(row.get('Gross Sales')) for row in rows if str(row.get('Дата', '')).startswith(date_today))
+            revenue_month = sum(_money(row.get('Gross Sales')) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
+        except Exception:
+            pass
         try:
-            ws_exp = sh.worksheet('Расходы')
-            rows_exp = ws_exp.get_all_records()
-            today_exp = [r for r in rows_exp if str(r.get('Дата','')).startswith(date_today)]
-            if today_exp:
-                total_exp = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in today_exp)
-                msg += f"\n\n💸 Расходы за день: {total_exp:.0f} THB"
-                for r in today_exp[:5]:
-                    if r.get('Сумма (THB)'):
-                        msg += f"\n   - {r.get('Поставщик/Магазин','?')}: {r.get('Сумма (THB)','')} THB"
-                if len(today_exp) > 5:
-                    msg += f"\n   + ещё {len(today_exp)-5} позиций"
-        except: pass
+            rows = sh.worksheet('Расходы').get_all_records()
+            expenses_today = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(date_today))
+            expenses_month = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
+        except Exception:
+            pass
 
-        # Закупки за день
-        try:
-            ws_pur = sh.worksheet('Закупки')
-            rows_pur = ws_pur.get_all_records()
-            last_date = None
-            for r in reversed(rows_pur):
-                if r.get('Дата',''):
-                    last_date = str(r.get('Дата',''))
-                    break
-            if last_date and last_date.startswith(date_today):
-                count = sum(1 for r in rows_pur if r.get('Продукт',''))
-                msg += f"\n\n🛒 Закупки оформлены"
-        except: pass
-
-        # Зарплаты за день
-        try:
-            ws_sal = sh.worksheet('Зарплаты')
-            rows_sal = ws_sal.get_all_records()
-            today_sal = [r for r in rows_sal if str(r.get('Дата','')).startswith(date_today)]
-            if today_sal:
-                total_sal = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in today_sal)
-                msg += f"\n\n💼 Зарплаты выплачены: {total_sal:.0f} THB"
-        except: pass
-
-        notify_owner(client_cfg, msg)
+        balance_today = revenue_today - expenses_today
+        msg = (
+            f"🌙 Вечерняя сводка · {now.strftime('%d.%m.%Y')}\n\n"
+            f"💰 Выручка сегодня: {revenue_today:,.0f} THB\n"
+            f"💸 Расходы сегодня: {expenses_today:,.0f} THB\n"
+            f"📈 Разница за день: {balance_today:+,.0f} THB\n"
+            f"📊 За месяц: выручка {revenue_month:,.0f} · расходы {expenses_month:,.0f} THB"
+        )
+        reminders = upcoming_reminders(sh, now)
+        if reminders:
+            msg += '\n\n🔔 Ближайшие напоминания:'
+            for left, title, expiry in reminders:
+                when = 'сегодня' if left == 0 else f'через {left} дн.'
+                msg += f"\n• {title} — {when} ({expiry})"
+        else:
+            msg += '\n\n🔔 Ближайших напоминаний нет.'
+        notify_owner(client_cfg, msg, with_actions=True)
     except Exception as e:
-        print(f"Daily digest error: {e}")
+        print(f"Evening summary error: {e}")
 
 
-def morning_report(client_cfg):
-    global _last_report
-    bot_id = client_cfg.get("owner_line_id","")
-    today = datetime.datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y-%m-%d")
-    if _last_report.get(bot_id) == today:
-        print("Morning report already sent today, skipping")
+def reminders_report(client_cfg):
+    if not gc:
+        return
+    try:
+        now = datetime.datetime.now(pytz.timezone('Asia/Bangkok'))
+        reminders = upcoming_reminders(gc.open_by_key(client_cfg['sheet_id']), now, days_limit=60, limit=12)
+        if reminders:
+            lines = ['🔔 Напоминания на ближайшие 60 дней:']
+            for left, title, expiry in reminders:
+                when = 'сегодня' if left == 0 else f'через {left} дн.'
+                lines.append(f"• {title} — {when} ({expiry})")
+            msg = '\n'.join(lines)
+        else:
+            msg = '🔔 На ближайшие 60 дней напоминаний нет.'
+        notify_owner(client_cfg, msg, with_actions=True)
+    except Exception as e:
+        print(f"Reminders report error: {e}")
+
+
+def owner_menu(client_cfg):
+    notify_owner(client_cfg, 'Выберите нужный отчёт:', with_actions=True)
+
+
+def detailed_report(client_cfg):
+    """Развёрнутый отчёт по запросу владельца."""
+    if not gc:
         return
     try:
         tz = pytz.timezone('Asia/Bangkok')
         now = datetime.datetime.now(tz)
-        date_today = now.strftime("%Y-%m-%d")
-        yesterday = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        date_today = now.strftime('%Y-%m-%d')
+        yesterday = (now - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         sh = gc.open_by_key(client_cfg['sheet_id'])
-        today_rows = []
         try:
-            ws_ost = sh.worksheet('Остатки')
-            all_rows = ws_ost.get_all_records()
-            today_rows = [r for r in all_rows if str(r.get('Дата','')) == date_today]
-            if not today_rows:
-                today_rows = all_rows[-50:] if len(all_rows) > 50 else all_rows
-        except: pass
-        total_yesterday = 0
-        total_recent = 0
+            all_rows = sh.worksheet('Остатки').get_all_records()
+            today_rows = [row for row in all_rows if str(row.get('Дата', '')) == date_today] or all_rows[-50:]
+        except Exception:
+            today_rows = []
         try:
-            ws_exp = sh.worksheet('Расходы')
-            rows_exp = ws_exp.get_all_records()
-            yest_exp = [r for r in rows_exp if str(r.get('Дата','')) == yesterday]
-            total_yesterday = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in yest_exp)
-            month_start = now.strftime('%Y-%m')
-            month_exp = [r for r in rows_exp if str(r.get('Дата','')).startswith(month_start)]
-            total_recent = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in month_exp)
-        except: pass
-        остатки_текст = "\n".join([f"{r.get('Продукт','')} | Холодильник: {r.get('Холодильник','')} | Морозилка: {r.get('Морозилка','')} | {r.get('Примечание','')}" for r in today_rows if r.get('Продукт')])
+            rows_exp = sh.worksheet('Расходы').get_all_records()
+            total_yesterday = sum(_money(row.get('Сумма (THB)')) for row in rows_exp if str(row.get('Дата', '')) == yesterday)
+            total_month = sum(_money(row.get('Сумма (THB)')) for row in rows_exp if str(row.get('Дата', '')).startswith(now.strftime('%Y-%m')))
+        except Exception:
+            total_yesterday = total_month = 0.0
+        stock_text = '\n'.join(
+            f"{row.get('Продукт', '')} | Холодильник: {row.get('Холодильник', '')} | Морозилка: {row.get('Морозилка', '')} | {row.get('Примечание', '')}"
+            for row in today_rows if row.get('Продукт')
+        )
         report = ask_openai(
-            "Ты аналитик кафе. Составь утреннюю сводку только на русском языке для владельца бизнеса.\nФормат:\n☀️ Доброе утро! Сводка по кофейне [дата]\n🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:\n- список\n🟡 МАЛО ОСТАЛОСЬ (1-2 шт):\n- список\n💰 РАСХОДЫ ВЧЕРА: X THB\n📊 РАСХОДЫ ЗА МЕСЯЦ: X THB\n💡 РЕКОМЕНДАЦИИ:\n- 2-3 совета",
-            f"Дата: {date_today}\nОстатки:\n{остатки_текст}\nРасходы вчера: {total_yesterday} THB\nРасходы за месяц: {total_recent} THB",
+            "Ты аналитик кафе. Составь подробный отчёт только на русском для владельца. Будь конкретным и компактным. Формат: 📋 Подробный отчёт по кофейне [дата]; 🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО; 🟡 МАЛО ОСТАЛОСЬ; 💰 РАСХОДЫ ВЧЕРА; 📊 РАСХОДЫ ЗА МЕСЯЦ; 💡 РЕКОМЕНДАЦИИ.",
+            f"Дата: {date_today}\nОстатки:\n{stock_text}\nРасходы вчера: {total_yesterday} THB\nРасходы за месяц: {total_month} THB",
             1000,
         )
-        # Проверяем напоминания
-        reminders_alert = ''
-        try:
-            ws_rem = sh.worksheet('Напоминания')
-            rows_rem = ws_rem.get_all_records()
-            for r in rows_rem:
-                expiry = r.get('Дата окончания', '')
-                if not expiry: continue
-                try:
-                    days_left = days_until(str(expiry), now=now)
-                    if 0 <= days_left <= 7:
-                        reminders_alert += f"\n⚠️ {r.get('Название','?')} — истекает через {days_left} дн. ({expiry})"
-                except: pass
-        except: pass
-
-        msg = report
-        if reminders_alert:
-            msg += f"\n\n🔔 ВАЖНЫЕ ДОКУМЕНТЫ:{reminders_alert}"
-        if notify_owner(client_cfg, msg):
-            _last_report[bot_id] = today
+        reminders = upcoming_reminders(sh, now, days_limit=7)
+        if reminders:
+            report += '\n\n🔔 ВАЖНЫЕ ДОКУМЕНТЫ:'
+            for left, title, expiry in reminders:
+                report += f"\n⚠️ {title} — истекает через {left} дн. ({expiry})"
+        notify_owner(client_cfg, report, with_actions=True)
     except Exception as e:
-        print(f"Morning report error: {e}")
+        print(f"Detailed report error: {e}")
 
 # ── Webhook ──────────────────────────────────────────────────────
 def process_line_event(destination, event):
@@ -560,9 +586,16 @@ def process_line_event(destination, event):
         if source.get('userId') not in allowed_owners:
             return
         _msg = event.get('message', {})
-        if _msg.get('type') == 'text' and _msg.get('text','').lower().strip() in ['сводка','отчет','отчёт','report']:
-            morning_report(client_cfg)
-        elif _msg.get('text','').lower().strip() in ['неделя','week','недельная']:
+        command = _msg.get('text', '').lower().strip() if _msg.get('type') == 'text' else ''
+        if command in ['сводка', 'отчет', 'отчёт', 'подробный отчёт', 'report']:
+            detailed_report(client_cfg)
+        elif command in ['деньги', 'финансы', 'money']:
+            evening_summary(client_cfg)
+        elif command in ['напоминания', 'reminders']:
+            reminders_report(client_cfg)
+        elif command in ['меню', 'menu']:
+            owner_menu(client_cfg)
+        elif command in ['неделя', 'week', 'недельная']:
             weekly_report(client_cfg)
         return
     msg = event.get('message', {})
@@ -755,8 +788,7 @@ try:
     scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Bangkok'))
     for bot_id, cfg in CLIENTS.items():
         if cfg.get('sheet_id') and gc:
-            scheduler.add_job(morning_report, 'cron', hour=8, minute=5, args=[cfg], id=f"morning_{bot_id}")
-            scheduler.add_job(daily_digest, 'cron', hour=18, minute=0, args=[cfg], id=f"daily_{bot_id}")
+            scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, args=[cfg], id=f"evening_{bot_id}")
             scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
     scheduler.start()
     print("Scheduler started")
