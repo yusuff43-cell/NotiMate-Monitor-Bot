@@ -1,6 +1,11 @@
 {
-  "client_name": {
+  "LINE_BOT_USER_ID": {
+    "name": "Название клиента",
+    "business_type": "cafe",
+    "custom_context": "Словарь и операционные правила конкретного клиента",
     "channel_access_token": "your_token_here",
-    "channel_secret": "your_secret_here"
+    "channel_secret": "your_secret_here",
+    "owner_line_id": "owner_line_user_id",
+    "sheet_id": "google_sheet_id"
   }
 }

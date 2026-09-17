@@ -5,25 +5,48 @@ import time
 import base64
 import datetime
 from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
-import anthropic
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    ApiClient,
+    Configuration,
+    MessagingApi,
+    MessagingApiBlob,
+    PushMessageRequest,
+    TextMessage,
+)
+from openai import APIStatusError, OpenAI, RateLimitError
 import gspread
 from google.oauth2.service_account import Credentials
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 
+from core import bangkok_date, bangkok_now, client_prompt_context, days_until, validate_clients
+from event_store import PostgresEventStore
+
 app = Flask(__name__)
 
 # ── Глобальные сервисы ──────────────────────────────────────────
-claude = anthropic.Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
+OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-5.6-luna')
+openai_client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
 
 if os.environ.get('CLIENTS_JSON'):
     CLIENTS = json.loads(os.environ['CLIENTS_JSON'])
 else:
     with open('clients.json', 'r', encoding='utf-8') as f:
         CLIENTS = json.load(f)
+
+CLIENTS = validate_clients(CLIENTS)
+
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+event_store = PostgresEventStore(DATABASE_URL) if DATABASE_URL else None
+DB_ENABLED = False
+if event_store:
+    try:
+        event_store.initialize()
+        DB_ENABLED = True
+    except Exception as e:
+        print(f"Database init failed: {e}")
 
 SHEETS_ENABLED = False
 gc = None
@@ -38,13 +61,52 @@ except Exception as e:
 
 _line_api_cache = {}
 
-def get_line_api(token: str) -> LineBotApi:
+def get_line_clients(token: str):
     if token not in _line_api_cache:
-        _line_api_cache[token] = LineBotApi(token)
+        api_client = ApiClient(Configuration(access_token=token))
+        _line_api_cache[token] = (
+            MessagingApi(api_client),
+            MessagingApiBlob(api_client),
+            api_client,
+        )
     return _line_api_cache[token]
+
+
+def get_line_api(token: str) -> MessagingApi:
+    return get_line_clients(token)[0]
+
+
+def get_line_blob_api(token: str) -> MessagingApiBlob:
+    return get_line_clients(token)[1]
 
 def find_client(destination: str):
     return CLIENTS.get(destination)
+
+
+def ask_openai(instructions, input_data, max_output_tokens):
+    """Call OpenAI with bounded retries and no response storage."""
+    for attempt in range(3):
+        try:
+            response = openai_client.responses.create(
+                model=OPENAI_MODEL,
+                instructions=instructions,
+                input=input_data,
+                max_output_tokens=max_output_tokens,
+                reasoning={"effort": "none"},
+                text={"verbosity": "low"},
+                store=False,
+            )
+            result = (response.output_text or '').strip()
+            if not result:
+                raise RuntimeError('OpenAI returned an empty response')
+            return result
+        except (RateLimitError, APIStatusError) as exc:
+            status_code = getattr(exc, 'status_code', None)
+            retryable = isinstance(exc, RateLimitError) or status_code in {408, 409, 429} or (status_code and status_code >= 500)
+            if retryable and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise
 
 # ── Google Sheets helpers ────────────────────────────────────────
 def get_or_create_sheet(sh, name, headers):
@@ -145,11 +207,13 @@ def save_проблемы(sheet_id, text, result, date_str):
 def notify_owner(client_cfg, msg):
     try:
         api = get_line_api(client_cfg['channel_access_token'])
-        api.push_message(client_cfg['owner_line_id'], TextSendMessage(text=msg))
+        api.push_message(PushMessageRequest(to=client_cfg['owner_line_id'], messages=[TextMessage(text=msg)]))
         if client_cfg.get('owner_line_id_2'):
-            api.push_message(client_cfg['owner_line_id_2'], TextSendMessage(text=msg))
+            api.push_message(PushMessageRequest(to=client_cfg['owner_line_id_2'], messages=[TextMessage(text=msg)]))
+        return True
     except Exception as e:
         print(f"Notify error: {e}")
+        return False
 
 # ── Анализ фото ──────────────────────────────────────────────────
 def check_price_drift(sheet_id, items, supplier, client_cfg):
@@ -162,7 +226,7 @@ def check_price_drift(sheet_id, items, supplier, client_cfg):
         ws = get_or_create_sheet(sh, 'Цены', headers)
         rows = ws.get_all_records()
         alerts = []
-        date_today = datetime.datetime.now().strftime('%Y-%m-%d')
+        date_today = bangkok_date()
         for item in items:
             name = item.get('description', '').strip()
             try:
@@ -197,15 +261,10 @@ def check_price_drift(sheet_id, items, supplier, client_cfg):
 
 
 def analyze_image(image_data, client_cfg):
-    lang = client_cfg.get('notification_language', 'russian')
-    lang_map = {'russian': 'Отвечай ТОЛЬКО на русском языке.', 'thai': 'ตอบเป็นภาษาไทยเท่านั้น', 'english': 'Reply in English only.'}
-    lang_instruction = lang_map.get(lang, lang_map['russian'])
-    for attempt in range(3):
-        try:
-            response = claude.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=2000,
-                system=f"""Ты анализируешь фото документов для кофейни. {lang_instruction}
+    business_context = client_prompt_context(client_cfg)
+    return ask_openai(
+        f"""Ты анализируешь фото документов для бизнеса. Входные документы могут быть на русском, тайском или английском языке. Распознавай все три языка, но все названия, пояснения, переводы и советы возвращай только на русском языке.
+Контекст клиента: {business_context}
 
 Если это SHIFT REPORT (содержит Shift number, Gross sales, Cash drawer):
 Верни ТОЛЬКО JSON: {{"doc_type":"shift","shift":"номер смены","gross_sales":число,"cash":число,"card":число,"qr":число,"difference":число,"note":""}}
@@ -223,39 +282,32 @@ def analyze_image(image_data, client_cfg):
 Верни ТОЛЬКО JSON: {{"doc_type":"reminder","title":"название документа на русском","expiry_date":"YYYY-MM-DD","note":""}}
 
 Если это ОБЪЯВЛЕНИЕ или УВЕДОМЛЕНИЕ:
-Верни ТОЛЬКО JSON: {{"doc_type":"notice","title":"заголовок","content":"перевод","note":""}}
+Верни ТОЛЬКО JSON: {{"doc_type":"notice","title":"заголовок на русском","content":"перевод на русский","note":""}}
 
 Если это СКРИНШОТ ИСТОРИИ ТРАНЗАКЦИЙ из банковского приложения (Transaction history, Payment, Transfer, Top up):
 Верни ТОЛЬКО JSON: {{"doc_type":"bank_history","items":[{{"type":"expense","recipient":"получатель","amount":0,"note":""}}]}}
 Правила:
 - Payment/Scan to pay → type=expense
-- Transfer PromptPay к физлицу (имя) → type=salary  
+- Transfer PromptPay к физлицу (имя) → type=salary
 - Top up PromptPay Wallet → type=expense
 - Игнорируй строки без суммы
 
 Скриншоты магазинов, ценники, фото продуктов без чека — верни: NOT_FINANCE
 Если не финансовый документ — верни: NOT_FINANCE""",
-                messages=[{"role": "user", "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_data}}, {"type": "text", "text": "Проанализируй"}]}]
-            )
-            return response.content[0].text.strip()
-        except anthropic.APIStatusError as e:
-            if e.status_code == 529 and attempt < 2:
-                time.sleep(10)
-                continue
-            raise e
+        [{"role": "user", "content": [
+            {"type": "input_text", "text": "Проанализируй документ."},
+            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{image_data}", "detail": "high"},
+        ]}],
+        2000,
+    )
 
 # ── Анализ текста ────────────────────────────────────────────────
 def analyze_text(text, client_cfg):
-    lang = client_cfg.get('notification_language', 'russian')
-    lang_map = {'russian': 'Отвечай ТОЛЬКО на русском языке. Переводи тайский и английский на русский.', 'thai': 'ตอบเป็นภาษาไทยเท่านั้น', 'english': 'Reply in English only.'}
-    lang_instruction = lang_map.get(lang, lang_map['russian'])
-    for attempt in range(3):
-        try:
-            response = claude.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=8096,
-                system=f"""КРИТИЧЕСКИ ВАЖНО: Только анализируй сообщения по правилам. Если не подходит — верни ТОЛЬКО: IGNORE
-{lang_instruction}
+    business_context = client_prompt_context(client_cfg)
+    return ask_openai(
+        f"""КРИТИЧЕСКИ ВАЖНО: Только анализируй сообщения по правилам. Если не подходит — верни ТОЛЬКО: IGNORE
+Входное сообщение может быть на русском, тайском или английском языке. Понимай все три языка. Названия товаров, описание проблемы, перевод, рекомендации и весь текст для владельца возвращай только на русском языке. JSON-ключи сохраняй точно по схеме.
+КОНТЕКСТ КЛИЕНТА: {business_context}
 
 СЛОВАРЬ: Clear/Clear croissant=Масляный круассан, Chocolate=Шоколадный круассан, Almond=Миндальный круассан, Ham Cheese=Круассан с ветчиной и сыром, Cheesecake=Чизкейк, Biscoff cheesecake=Бискофф чизкейк, Cheese pancakes=Сырники, Mango cheese pancakes=Манговые сырники, Cucumber cheese pancakes=Огуречные сырники, Crepes=Шпинатные блинчики, Pancakes=Панкейки, Crepes burger=Блины для бургера, Pannacotta=Панна-котта, Chocolate mousse=Шоколадный мусс, Salted Caramel=Солёная карамель, Bounty=Баунти, Halva=Халва, Marzipan=Марципан, Brownie=Брауни, Banana bread=Банановый хлеб, Muffin=Маффин, Snickers=Сникерс, Napoleons=Наполеон, Sourdough=Хлеб на закваске (для брускет), Banana=Банан (не банановый хлеб), Coconut velvet=Кокосовое молоко велюр, Coconut milk velvet=Кокосовое молоко велюр, Dragon fruit=Драгон фрут, Salmon=Лосось, Yogurt=Йогурт, Açaí=Асаи
 
@@ -280,14 +332,9 @@ def analyze_text(text, client_cfg):
 Верни: ВАЖНО [ПРОБЛЕМА]: [описание]\\n💡 Совет: [совет]
 
 Если не подходит — верни только: IGNORE""",
-                messages=[{"role": "user", "content": text}]
-            )
-            return response.content[0].text.strip()
-        except anthropic.APIStatusError as e:
-            if e.status_code == 529 and attempt < 2:
-                time.sleep(10)
-                continue
-            raise e
+        text,
+        8096,
+    )
 
 # ── Утренняя сводка ──────────────────────────────────────────────
 _last_report = {}
@@ -347,11 +394,9 @@ def weekly_report(client_cfg):
         profit = total_revenue - total_expenses
         profit_sign = '+' if profit >= 0 else ''
 
-        resp = claude.messages.create(
-            model='claude-haiku-4-5',
-            max_tokens=800,
-            system='Составь короткую еженедельную сводку для владельца кофейни на русском языке. Будь конкретным и кратким. Максимум 15 строк.',
-            messages=[{'role': 'user', 'content': f"""Данные за неделю ({week_ago} — {date_today}):
+        report = ask_openai(
+            'Составь короткую еженедельную сводку для русскоязычного владельца кофейни. Пиши только на русском, конкретно и кратко, максимум 15 строк.',
+            f"""Данные за неделю ({week_ago} — {date_today}):
 Выручка: {total_revenue:.0f} THB
 Расходы: {total_expenses:.0f} THB
 Прибыль: {profit_sign}{profit:.0f} THB
@@ -365,9 +410,10 @@ def weekly_report(client_cfg):
 📈 Прибыль: X THB
 ⚠️ Проблемы: список или 'нет'
 🔴 Закончилось: список или 'всё ок'
-💡 Вывод: 1-2 предложения"""}]
+💡 Вывод: 1-2 предложения""",
+            800,
         )
-        notify_owner(client_cfg, resp.content[0].text.strip())
+        notify_owner(client_cfg, report)
     except Exception as e:
         print(f"Weekly report error: {e}")
 
@@ -444,7 +490,6 @@ def morning_report(client_cfg):
     if _last_report.get(bot_id) == today:
         print("Morning report already sent today, skipping")
         return
-    _last_report[bot_id] = today
     try:
         tz = pytz.timezone('Asia/Bangkok')
         now = datetime.datetime.now(tz)
@@ -471,10 +516,10 @@ def morning_report(client_cfg):
             total_recent = sum(float(str(r.get('Сумма (THB)',0) or 0).replace('฿','').replace(',','').strip() or 0) for r in month_exp)
         except: pass
         остатки_текст = "\n".join([f"{r.get('Продукт','')} | Холодильник: {r.get('Холодильник','')} | Морозилка: {r.get('Морозилка','')} | {r.get('Примечание','')}" for r in today_rows if r.get('Продукт')])
-        resp = claude.messages.create(
-            model="claude-haiku-4-5", max_tokens=1000,
-            system="Ты аналитик кафе. Составь утреннюю сводку на русском.\nФормат:\n☀️ Доброе утро! Сводка по кофейне [дата]\n🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:\n- список\n🟡 МАЛО ОСТАЛОСЬ (1-2 шт):\n- список\n💰 РАСХОДЫ ВЧЕРА: X THB\n📊 РАСХОДЫ ЗА МЕСЯЦ: X THB\n💡 РЕКОМЕНДАЦИИ:\n- 2-3 совета",
-            messages=[{"role": "user", "content": f"Дата: {date_today}\nОстатки:\n{остатки_текст}\nРасходы вчера: {total_yesterday} THB\nРасходы последние: {total_recent} THB"}]
+        report = ask_openai(
+            "Ты аналитик кафе. Составь утреннюю сводку только на русском языке для владельца бизнеса.\nФормат:\n☀️ Доброе утро! Сводка по кофейне [дата]\n🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО:\n- список\n🟡 МАЛО ОСТАЛОСЬ (1-2 шт):\n- список\n💰 РАСХОДЫ ВЧЕРА: X THB\n📊 РАСХОДЫ ЗА МЕСЯЦ: X THB\n💡 РЕКОМЕНДАЦИИ:\n- 2-3 совета",
+            f"Дата: {date_today}\nОстатки:\n{остатки_текст}\nРасходы вчера: {total_yesterday} THB\nРасходы за месяц: {total_recent} THB",
+            1000,
         )
         # Проверяем напоминания
         reminders_alert = ''
@@ -485,185 +530,228 @@ def morning_report(client_cfg):
                 expiry = r.get('Дата окончания', '')
                 if not expiry: continue
                 try:
-                    exp_date = datetime.datetime.strptime(str(expiry)[:10], '%Y-%m-%d')
-                    days_left = (exp_date - datetime.datetime.now(tz)).days
+                    days_left = days_until(str(expiry), now=now)
                     if 0 <= days_left <= 7:
                         reminders_alert += f"\n⚠️ {r.get('Название','?')} — истекает через {days_left} дн. ({expiry})"
                 except: pass
         except: pass
 
-        msg = resp.content[0].text.strip()
+        msg = report
         if reminders_alert:
             msg += f"\n\n🔔 ВАЖНЫЕ ДОКУМЕНТЫ:{reminders_alert}"
-        notify_owner(client_cfg, msg)
+        if notify_owner(client_cfg, msg):
+            _last_report[bot_id] = today
     except Exception as e:
         print(f"Morning report error: {e}")
 
 # ── Webhook ──────────────────────────────────────────────────────
+def process_line_event(destination, event):
+    """Process one event claimed by the durable worker."""
+    client_cfg = find_client(destination)
+    if not client_cfg:
+        raise ValueError(f"Unknown destination: {destination}")
+    if event.get('type') != 'message':
+        return
+    if not SHEETS_ENABLED:
+        raise RuntimeError('Google Sheets is not ready')
+    source = event.get('source', {})
+    if source.get('type') not in ('group', 'room'):
+        allowed_owners = {client_cfg.get('owner_line_id'), client_cfg.get('owner_line_id_2')}
+        if source.get('userId') not in allowed_owners:
+            return
+        _msg = event.get('message', {})
+        if _msg.get('type') == 'text' and _msg.get('text','').lower().strip() in ['сводка','отчет','отчёт','report']:
+            morning_report(client_cfg)
+        elif _msg.get('text','').lower().strip() in ['неделя','week','недельная']:
+            weekly_report(client_cfg)
+        return
+    msg = event.get('message', {})
+    msg_type = msg.get('type')
+    current_bangkok = bangkok_now()
+    date_only = current_bangkok.strftime("%Y-%m-%d")
+    now_str = current_bangkok.strftime("%Y-%m-%d %H:%M")
+    blob_api = get_line_blob_api(client_cfg['channel_access_token'])
+
+    # ── Текст ──
+    if msg_type == 'text':
+        text = msg.get('text', '').strip()
+        result = analyze_text(text, client_cfg)
+        if result == 'IGNORE' or not result:
+            return
+        if result.startswith('ВАЖНО [ПРОБЛЕМА]'):
+            save_проблемы(client_cfg['sheet_id'], text, result, now_str)
+            notify_owner(client_cfg, result)
+            return
+        try:
+            json_match = re.search(r'\{.*\}', result, re.DOTALL)
+            if not json_match:
+                return
+            data = json.loads(json_match.group())
+            if data['type'] == 'purchase':
+                save_закупки(client_cfg['sheet_id'], data['items'], date_only)
+                msg_text = "🛒 ЗАКУПКА записана:\n"
+                for item in data['items']:
+                    msg_text += f"- {item['product']}: {item['quantity']}\n"
+                # уведомление в дайджесте 18:00
+            elif data['type'] == 'stock':
+                save_остатки(client_cfg['sheet_id'], data['items'], date_only)
+                out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
+                low = [i for i in data['items'] if i.get('note') == 'Low stock']
+                msg_text = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
+                if out:
+                    msg_text += "\n🔴 ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ:\n"
+                    for i in out: msg_text += f"- {i['product']}\n"
+                if low:
+                    msg_text += "\n🟡 МАЛО ОСТАЛОСЬ:\n"
+                    for i in low: msg_text += f"- {i['product']}\n"
+                notify_owner(client_cfg, msg_text)
+            elif data['type'] == 'single_stock':
+                if gc:
+                    sh = gc.open_by_key(client_cfg['sheet_id'])
+                    ws = get_or_create_sheet(sh, 'Остатки', ['Дата','Категория','Продукт','Холодильник','Морозилка','Примечание'])
+                    ws.append_row([date_only, '', data.get('product',''), data.get('amount',''), '', ''])
+                notify_owner(client_cfg, f"📦 Остаток записан:\n{data.get('product','')}: {data.get('amount','')}")
+            elif data['type'] == 'text_expense':
+                items = data.get('items', [])
+                total = data.get('total', '')
+                supplier = data.get('supplier', '')
+                positions = ', '.join([i['description'] for i in items if i.get('description')])
+                if gc:
+                    sh = gc.open_by_key(client_cfg['sheet_id'])
+                    ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
+                    clean_total = str(total or '').replace('฿','').replace('B','').replace(',','').strip()
+                    ws.append_row([date_only, 'Закупка', supplier, positions, clean_total, ''])
+                notify_owner(client_cfg, f"💸 РАСХОД записан:\nМагазин: {supplier}\nПозиции: {positions}\nИтого: {total} THB")
+        except Exception as e:
+            raise RuntimeError(f"Text handler error: {e}") from e
+
+    # ── Фото ──
+    elif msg_type == 'image':
+        print(f'Image received, processing...')
+        try:
+            content = blob_api.get_message_content(msg.get('id'))
+            image_data = base64.b64encode(content).decode('utf-8')
+            result = analyze_image(image_data, client_cfg)
+            print(f'Image result: {result[:200]}')
+            if 'NOT_FINANCE' in result:
+                return
+            json_match = re.search(r'\{.*\}', result, re.DOTALL)
+            if not json_match:
+                return
+            data = json.loads(json_match.group())
+            doc_type = data.get('doc_type')
+            if doc_type == 'shift':
+                save_выручка(client_cfg['sheet_id'], data, date_only, data.get('note',''))
+                diff = data.get('difference', 0)
+                msg_text = f"💰 Смена #{data.get('shift','?')}\n"
+                msg_text += f"📊 Выручка: {data.get('gross_sales','')} THB\n"
+                msg_text += f"💵 Наличные: {data.get('cash','')} THB\n"
+                msg_text += f"💳 Карта: {data.get('card','')} THB\n"
+                msg_text += f"📱 QR: {data.get('qr','')} THB\n"
+                msg_text += f"✅ Касса: {'+' if float(diff or 0) >= 0 else ''}{diff} THB"
+                notify_owner(client_cfg, msg_text)
+            elif doc_type == 'invoice':
+                save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
+                check_price_drift(client_cfg['sheet_id'], data.get('items',[]), data.get('supplier',''), client_cfg)
+                notify_owner(client_cfg, f"🧾 НАКЛАДНАЯ записана\nПоставщик: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
+            elif doc_type == 'expense':
+                save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
+                notify_owner(client_cfg, f"🛒 РАСХОД записан\nМагазин: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
+            elif doc_type == 'salary':
+                if gc:
+                    sh = gc.open_by_key(client_cfg['sheet_id'])
+                    ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
+                    ws.append_row([date_only, data.get('recipient',''), data.get('amount',''), data.get('note','')])
+                notify_owner(client_cfg, f"💼 ЗАРПЛАТА записана\nПолучатель: {data.get('recipient','—')}\nСумма: {data.get('amount','—')} THB")
+            elif doc_type == 'reminder':
+                if gc:
+                    sh = gc.open_by_key(client_cfg['sheet_id'])
+                    ws = get_or_create_sheet(sh, 'Напоминания', ['Название', 'Дата окончания', 'Дата добавления', 'Примечание'])
+                    ws.append_row([data.get('title',''), data.get('expiry_date',''), date_only, data.get('note','')])
+                notify_owner(client_cfg, f"📅 НАПОМИНАНИЕ записано\n📄 {data.get('title','—')}\n⏰ Истекает: {data.get('expiry_date','—')}")
+            elif doc_type == 'notice':
+                notify_owner(client_cfg, f"⚡️ ВАЖНОЕ УВЕДОМЛЕНИЕ\n\n{data.get('title','')}\n\n{data.get('content','')}")
+            elif doc_type == 'bank_history':
+                items = data.get('items', [])
+                expenses = [i for i in items if i.get('type') == 'expense']
+                salaries = [i for i in items if i.get('type') == 'salary']
+                if gc and expenses:
+                    sh = gc.open_by_key(client_cfg['sheet_id'])
+                    ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
+                    for item in expenses:
+                        ws.append_row([date_only, 'Закупка', item.get('recipient',''), '', item.get('amount',''), item.get('note','')])
+                if gc and salaries:
+                    sh = gc.open_by_key(client_cfg['sheet_id'])
+                    ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
+                    for item in salaries:
+                        ws.append_row([date_only, item.get('recipient',''), item.get('amount',''), item.get('note','')])
+                msg = f"🏦 ТРАНЗАКЦИИ записаны ({len(items)} шт)\n"
+                if expenses:
+                    msg += f"💸 Расходы: {len(expenses)} шт\n"
+                if salaries:
+                    msg += f"💼 Зарплаты: {len(salaries)} шт"
+                notify_owner(client_cfg, msg)
+        except Exception as e:
+            raise RuntimeError(f"Image handler error: {e}") from e
+
+
 @app.route("/webhook", methods=['POST'])
 def webhook():
     body = request.get_data(as_text=True)
     try:
-        events = json.loads(body)
-    except:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
         abort(400)
-    destination = events.get('destination', '')
+
+    destination = payload.get('destination', '')
     client_cfg = find_client(destination)
     if not client_cfg:
         print(f"Unknown destination: {destination}")
         return 'OK'
+
     signature = request.headers.get('X-Line-Signature', '')
     handler = WebhookHandler(client_cfg['channel_secret'])
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-    for event in events.get('events', []):
-        if event.get('type') != 'message':
-            continue
-        source = event.get('source', {})
-        if source.get('type') not in ('group', 'room'):
-            _msg = event.get('message', {})
-            if _msg.get('type') == 'text' and _msg.get('text','').lower().strip() in ['сводка','отчет','отчёт','report']:
-                morning_report(client_cfg)
-            elif _msg.get('text','').lower().strip() in ['неделя','week','недельная']:
-                weekly_report(client_cfg)
-            continue
-        msg = event.get('message', {})
-        msg_type = msg.get('type')
-        date_only = datetime.datetime.now().strftime("%Y-%m-%d")
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        api = get_line_api(client_cfg['channel_access_token'])
 
-        # ── Текст ──
-        if msg_type == 'text':
-            text = msg.get('text', '').strip()
-            result = analyze_text(text, client_cfg)
-            if result == 'IGNORE' or not result:
-                continue
-            if result.startswith('ВАЖНО [ПРОБЛЕМА]'):
-                save_проблемы(client_cfg['sheet_id'], text, result, now_str)
-                notify_owner(client_cfg, result)
-                continue
-            try:
-                json_match = re.search(r'\{.*\}', result, re.DOTALL)
-                if not json_match:
-                    continue
-                data = json.loads(json_match.group())
-                if data['type'] == 'purchase':
-                    save_закупки(client_cfg['sheet_id'], data['items'], date_only)
-                    msg_text = "🛒 ЗАКУПКА записана:\n"
-                    for item in data['items']:
-                        msg_text += f"- {item['product']}: {item['quantity']}\n"
-                    # уведомление в дайджесте 18:00
-                elif data['type'] == 'stock':
-                    save_остатки(client_cfg['sheet_id'], data['items'], date_only)
-                    out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
-                    low = [i for i in data['items'] if i.get('note') == 'Low stock']
-                    msg_text = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
-                    if out:
-                        msg_text += "\n🔴 ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ:\n"
-                        for i in out: msg_text += f"- {i['product']}\n"
-                    if low:
-                        msg_text += "\n🟡 МАЛО ОСТАЛОСЬ:\n"
-                        for i in low: msg_text += f"- {i['product']}\n"
-                    notify_owner(client_cfg, msg_text)
-                elif data['type'] == 'single_stock':
-                    if gc:
-                        sh = gc.open_by_key(client_cfg['sheet_id'])
-                        ws = get_or_create_sheet(sh, 'Остатки', ['Дата','Категория','Продукт','Холодильник','Морозилка','Примечание'])
-                        ws.append_row([date_only, '', data.get('product',''), data.get('amount',''), '', ''])
-                    notify_owner(client_cfg, f"📦 Остаток записан:\n{data.get('product','')}: {data.get('amount','')}")
-                elif data['type'] == 'text_expense':
-                    items = data.get('items', [])
-                    total = data.get('total', '')
-                    supplier = data.get('supplier', '')
-                    positions = ', '.join([i['description'] for i in items if i.get('description')])
-                    if gc:
-                        sh = gc.open_by_key(client_cfg['sheet_id'])
-                        ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
-                        clean_total = str(total or '').replace('฿','').replace('B','').replace(',','').strip()
-                        ws.append_row([date_only, 'Закупка', supplier, positions, clean_total, ''])
-                    notify_owner(client_cfg, f"💸 РАСХОД записан:\nМагазин: {supplier}\nПозиции: {positions}\nИтого: {total} THB")
-            except Exception as e:
-                print(f"Text handler error: {e}")
+    message_events = [event for event in payload.get('events', []) if event.get('type') == 'message']
+    if not message_events:
+        return 'OK'
+    if not event_store or not DB_ENABLED:
+        return {'status': 'database_unavailable'}, 503
 
-        # ── Фото ──
-        elif msg_type == 'image':
-            print(f'Image received, processing...')
-            try:
-                content = api.get_message_content(msg.get('id'))
-                image_data = base64.b64encode(content.content).decode('utf-8')
-                result = analyze_image(image_data, client_cfg)
-                print(f'Image result: {result[:200]}')
-                if 'NOT_FINANCE' in result:
-                    continue
-                json_match = re.search(r'\{.*\}', result, re.DOTALL)
-                if not json_match:
-                    continue
-                data = json.loads(json_match.group())
-                doc_type = data.get('doc_type')
-                if doc_type == 'shift':
-                    save_выручка(client_cfg['sheet_id'], data, date_only, data.get('note',''))
-                    diff = data.get('difference', 0)
-                    msg_text = f"💰 Смена #{data.get('shift','?')}\n"
-                    msg_text += f"📊 Выручка: {data.get('gross_sales','')} THB\n"
-                    msg_text += f"💵 Наличные: {data.get('cash','')} THB\n"
-                    msg_text += f"💳 Карта: {data.get('card','')} THB\n"
-                    msg_text += f"📱 QR: {data.get('qr','')} THB\n"
-                    msg_text += f"✅ Касса: {'+' if float(diff or 0) >= 0 else ''}{diff} THB"
-                    notify_owner(client_cfg, msg_text)
-                elif doc_type == 'invoice':
-                    save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
-                    check_price_drift(client_cfg['sheet_id'], data.get('items',[]), data.get('supplier',''), client_cfg)
-                    notify_owner(client_cfg, f"🧾 НАКЛАДНАЯ записана\nПоставщик: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
-                elif doc_type == 'expense':
-                    save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
-                    notify_owner(client_cfg, f"🛒 РАСХОД записан\nМагазин: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
-                elif doc_type == 'salary':
-                    if gc:
-                        sh = gc.open_by_key(client_cfg['sheet_id'])
-                        ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
-                        ws.append_row([date_only, data.get('recipient',''), data.get('amount',''), data.get('note','')])
-                    notify_owner(client_cfg, f"💼 ЗАРПЛАТА записана\nПолучатель: {data.get('recipient','—')}\nСумма: {data.get('amount','—')} THB")
-                elif doc_type == 'reminder':
-                    if gc:
-                        sh = gc.open_by_key(client_cfg['sheet_id'])
-                        ws = get_or_create_sheet(sh, 'Напоминания', ['Название', 'Дата окончания', 'Дата добавления', 'Примечание'])
-                        ws.append_row([data.get('title',''), data.get('expiry_date',''), date_only, data.get('note','')])
-                    notify_owner(client_cfg, f"📅 НАПОМИНАНИЕ записано\n📄 {data.get('title','—')}\n⏰ Истекает: {data.get('expiry_date','—')}")
-                elif doc_type == 'notice':
-                    notify_owner(client_cfg, f"⚡️ ВАЖНОЕ УВЕДОМЛЕНИЕ\n\n{data.get('title','')}\n\n{data.get('content','')}")
-                elif doc_type == 'bank_history':
-                    items = data.get('items', [])
-                    expenses = [i for i in items if i.get('type') == 'expense']
-                    salaries = [i for i in items if i.get('type') == 'salary']
-                    if gc and expenses:
-                        sh = gc.open_by_key(client_cfg['sheet_id'])
-                        ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
-                        for item in expenses:
-                            ws.append_row([date_only, 'Закупка', item.get('recipient',''), '', item.get('amount',''), item.get('note','')])
-                    if gc and salaries:
-                        sh = gc.open_by_key(client_cfg['sheet_id'])
-                        ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
-                        for item in salaries:
-                            ws.append_row([date_only, item.get('recipient',''), item.get('amount',''), item.get('note','')])
-                    msg = f"🏦 ТРАНЗАКЦИИ записаны ({len(items)} шт)\n"
-                    if expenses:
-                        msg += f"💸 Расходы: {len(expenses)} шт\n"
-                    if salaries:
-                        msg += f"💼 Зарплаты: {len(salaries)} шт"
-                    notify_owner(client_cfg, msg)
-            except Exception as e:
-                print(f"Image handler error: {e}")
+    try:
+        accepted, duplicates = event_store.register_events(destination, message_events)
+    except Exception as exc:
+        print(f"Event registration failed: {type(exc).__name__}: {exc}")
+        return {'status': 'event_registration_failed'}, 503
+
+    print(f"Events registered: accepted={accepted} duplicates={duplicates}")
     return 'OK'
 
 @app.route("/health", methods=['GET'])
 def health():
     return {"status": "ok", "clients": len(CLIENTS), "sheets": SHEETS_ENABLED}, 200
 
+
+@app.route("/ready", methods=['GET'])
+def ready():
+    database_ready = bool(event_store and DB_ENABLED and event_store.ping())
+    ready_state = bool(CLIENTS) and SHEETS_ENABLED and database_ready
+    payload = {
+        "status": "ready" if ready_state else "not_ready",
+        "clients": len(CLIENTS),
+        "sheets": SHEETS_ENABLED,
+        "database": database_ready,
+    }
+    return payload, 200 if ready_state else 503
+
 # ── Планировщик ──────────────────────────────────────────────────
 try:
+    if os.environ.get('DISABLE_SCHEDULER') == '1':
+        raise RuntimeError('Scheduler disabled for this process')
     scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Bangkok'))
     for bot_id, cfg in CLIENTS.items():
         if cfg.get('sheet_id') and gc:

@@ -1,68 +1,67 @@
 # NotiMate Monitor Bot
 
-Multi-tenant AI-бот для мониторинга рабочих чатов малого бизнеса (LINE).
-Владелец бизнеса добавляет бота в рабочую группу — Claude анализирует
-сообщения сотрудников (продажи, расходы, остатки, проблемы), пишет
-структурированные данные в Google Sheets клиента и шлёт push владельцу.
+LINE-бот для русскоязычного владельца бизнеса в Таиланде. Бот читает разрешённые рабочие группы, понимает сообщения и документы на русском, тайском и английском, превращает их в структурированные записи, обновляет Google Sheets и отправляет владельцу уведомления и отчёты на русском языке.
 
-Один сервис на Railway обслуживает всех клиентов: маршрутизация
-по `destination` (Bot User ID), конфигурация клиентов — без изменения кода.
-Работал в продакшене с платящим клиентом (Таиланд, 2025–2026).
+## Языковой контракт
+
+- Интерфейс владельца, уведомления, отчёты и Google Sheets — на русском.
+- Входящие тексты и документы — русский, тайский или английский без ручного выбора языка.
+- Названия товаров, пояснения и рекомендации нормализуются на русский.
 
 ## Как работает
-Сообщение в группу клиента
-↓ webhook с destination (Bot User ID клиента)
-app.py → find_client(destination) → конфигурация клиента
-↓ Claude Haiku анализирует: продажа / расход / сток / проблема
-↓ (фото чека → Claude Vision → распознавание суммы)
-↓ запись в Google Sheets клиента
-↓ push-уведомление владельцу
+
+`LINE-группа → Flask webhook → OpenAI Responses API → Google Sheets → уведомление владельцу в LINE`
+
+Модель по умолчанию — `gpt-5.6-luna`; её можно изменить через `OPENAI_MODEL` без правки кода. Для изображений используется тот же мультимодальный API.
+
 ## Стек
 
-Flask + LINE SDK v2 + Claude Haiku (+ Vision для чеков) + gspread + Railway
+Python, Flask, LINE SDK v3, OpenAI Responses API, gspread, Railway. Целевая надёжная архитектура с PostgreSQL и отдельным worker описана в корневой документации проекта.
 
-## Конфигурация клиентов
+## Настройка
 
-Читается из переменной окружения `CLIENTS_JSON` (приоритет)
-или из локального файла `clients.json` (см. `clients.json.example`).
+Скопируйте `.env.example`, создайте `clients.json` на основе `clients.json.example` или передайте конфигурацию через `CLIENTS_JSON`. Не добавляйте реальные ключи в Git.
 
-## Переменные Railway
-
-| Переменная | Что это |
+| Переменная | Назначение |
 |---|---|
-| `ANTHROPIC_API_KEY` | Ключ Anthropic (общий) |
-| `GOOGLE_CREDENTIALS` | JSON service account одной строкой |
-| `CLIENTS_JSON` | Конфигурация клиентов одной строкой (опционально) |
+| `OPENAI_API_KEY` | Ключ OpenAI API |
+| `OPENAI_MODEL` | Модель; по умолчанию `gpt-5.6-luna` |
+| `GOOGLE_CREDENTIALS` | JSON Google service account одной строкой |
+| `CLIENTS_JSON` | Конфигурация клиентов одной строкой |
+| `PORT` | Порт веб-сервиса |
 
-## Добавление клиента (без изменения кода)
+Конфигурация клиента требует ключ по LINE `destination`/Bot User ID и поля `channel_access_token`, `channel_secret`, `owner_line_id`, `sheet_id`. Поля `name`, `business_type` и `custom_context` передаются модели как контекст конкретного бизнеса.
 
-Добавить блок в конфигурацию:
+## Проверка
 
-```json
-{
-  "BOT_USER_ID_клиента": {
-    "name": "Имя бизнеса",
-    "business_type": "cafe",
-    "custom_context": "описание бизнеса для AI",
-    "channel_access_token": "токен OA клиента",
-    "channel_secret": "secret OA клиента",
-    "owner_line_id": "LINE ID владельца",
-    "sheet_id": "ID Google таблицы клиента"
-  }
-}
+```bash
+python3 -m unittest -v test_core.py test_worker.py test_webhook.py
+python3 -m py_compile app.py core.py event_store.py worker.py test_core.py test_worker.py test_webhook.py
 ```
 
-Deploy на Railway происходит автоматически при push.
+`/health` проверяет процесс. `/ready` требует доступные Google Sheets и PostgreSQL.
 
-## Где брать данные клиента
+## Устойчивая обработка webhook
 
-- **Bot User ID** (ключ) — LINE Developers → Messaging API → Bot User ID
-- **channel_access_token** — LINE Developers → Messaging API → Issue
-- **channel_secret** — LINE Developers → Basic settings
-- **owner_line_id** — LINE User ID владельца
-- **sheet_id** — из URL таблицы: docs.google.com/spreadsheets/d/`SHEET_ID`/edit
+Webhook проверяет LINE-подпись, сохраняет каждый `webhookEventId` в PostgreSQL и сразу отвечает LINE. Уникальный первичный ключ не позволяет повторной доставке создать вторую задачу. Медленная обработка выполняется отдельным `worker.py`.
 
-## Google Sheets доступ
+Дополнительные переменные:
 
-Расшарить таблицу клиента на email service account
-(поле `client_email` из GOOGLE_CREDENTIALS) с правами редактора.
+| Переменная | Назначение |
+|---|---|
+| `DATABASE_URL` | PostgreSQL URL, в Railway добавляется сервисом Postgres |
+| `WORKER_MAX_ATTEMPTS` | Максимум попыток; по умолчанию 5 |
+| `WORKER_POLL_SECONDS` | Интервал опроса очереди; по умолчанию 1 секунда |
+
+Команды процессов:
+
+```text
+web: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 30
+worker: python worker.py
+```
+
+В Railway нужны два сервиса из одного репозитория: web с первой командой и worker со второй. Оба получают одинаковые переменные, включая `DATABASE_URL`.
+
+Таблица `line_events` создаётся автоматически при запуске и также описана в `migrations/001_line_events.sql`. События после пяти неудачных попыток получают статус `failed` и остаются в PostgreSQL для разбора.
+
+До включения LINE `Webhook redelivery` необходимо развернуть и web, и worker и проверить уникальность события на staging. Повтор всей задачи после частичного сбоя Google Sheets пока может повторить строку: идемпотентность побочных эффектов — следующий обязательный этап.
