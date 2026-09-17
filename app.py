@@ -13,9 +13,6 @@ from linebot.v3.messaging import (
     MessagingApi,
     MessagingApiBlob,
     PushMessageRequest,
-    MessageAction,
-    QuickReply,
-    QuickReplyItem,
     TextMessage,
 )
 from openai import APIStatusError, OpenAI, RateLimitError
@@ -207,17 +204,16 @@ def save_проблемы(sheet_id, text, result, date_str):
     ws = get_or_create_sheet(sh, 'Проблемы', headers)
     ws.append_row([date_str, text, result])
 
-def notify_owner(client_cfg, msg, with_actions=False):
+def notify_owner(client_cfg, msg):
     try:
         api = get_line_api(client_cfg['channel_access_token'])
-        quick_reply = owner_quick_actions() if with_actions else None
         recipients = [client_cfg['owner_line_id']]
         if client_cfg.get('owner_line_id_2'):
             recipients.append(client_cfg['owner_line_id_2'])
         for recipient in recipients:
             api.push_message(PushMessageRequest(
                 to=recipient,
-                messages=[TextMessage(text=msg, quick_reply=quick_reply)],
+                messages=[TextMessage(text=msg)],
             ))
         return True
     except Exception as e:
@@ -434,14 +430,6 @@ def _money(value):
         return 0.0
 
 
-def owner_quick_actions():
-    return QuickReply(items=[
-        QuickReplyItem(action=MessageAction(label='Подробный отчёт', text='подробный отчёт')),
-        QuickReplyItem(action=MessageAction(label='Деньги', text='деньги')),
-        QuickReplyItem(action=MessageAction(label='Напоминания', text='напоминания')),
-    ])
-
-
 def upcoming_reminders(sh, now, days_limit=14, limit=5):
     try:
         rows = sh.worksheet('Напоминания').get_all_records()
@@ -503,7 +491,7 @@ def evening_summary(client_cfg):
                 msg += f"\n• {title} — {when} ({expiry})"
         else:
             msg += '\n\n🔔 Ближайших напоминаний нет.'
-        notify_owner(client_cfg, msg, with_actions=True)
+        notify_owner(client_cfg, msg)
     except Exception as e:
         print(f"Evening summary error: {e}")
 
@@ -522,13 +510,13 @@ def reminders_report(client_cfg):
             msg = '\n'.join(lines)
         else:
             msg = '🔔 На ближайшие 7 дней напоминаний нет.'
-        notify_owner(client_cfg, msg, with_actions=True)
+        notify_owner(client_cfg, msg)
     except Exception as e:
         print(f"Reminders report error: {e}")
 
 
 def owner_menu(client_cfg):
-    notify_owner(client_cfg, 'Выберите нужный отчёт:', with_actions=True)
+    notify_owner(client_cfg, 'Постоянное меню находится внизу чата. Нажмите «Отчёты», чтобы открыть его.')
 
 
 def detailed_report(client_cfg):
@@ -566,7 +554,7 @@ def detailed_report(client_cfg):
             report += '\n\n🔔 ВАЖНЫЕ ДОКУМЕНТЫ:'
             for left, title, expiry in reminders:
                 report += f"\n⚠️ {title} — истекает через {left} дн. ({expiry})"
-        notify_owner(client_cfg, report, with_actions=True)
+        notify_owner(client_cfg, report)
     except Exception as e:
         print(f"Detailed report error: {e}")
 

@@ -95,6 +95,9 @@ def main() -> None:
     owner_id = secret("MY_LINE_USER_ID")
     owner_2_id = hidden_optional("OWNER_2_LINE_USER_ID")
     sheet_id = secret("GOOGLE_SHEET_ID")
+    sheet_gid = required("ID первой вкладки Google Sheets (gid)", "0")
+    if not sheet_gid.isdigit():
+        raise SystemExit("Google Sheets gid должен содержать только цифры.")
     google_raw = secret("GOOGLE_CREDENTIALS", current.get("GOOGLE_CREDENTIALS"))
 
     try:
@@ -126,6 +129,7 @@ def main() -> None:
         "channel_secret": line_secret,
         "owner_line_id": owner_id,
         "sheet_id": sheet_id,
+        "sheet_gid": int(sheet_gid),
     }
     if owner_2_id:
         client["owner_line_id_2"] = owner_2_id

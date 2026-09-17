@@ -30,7 +30,7 @@ Python, Flask, LINE SDK v3, OpenAI Responses API, gspread, Railway. Целева
 | `CLIENTS_JSON` | Конфигурация клиентов одной строкой |
 | `PORT` | Порт веб-сервиса |
 
-Конфигурация клиента требует ключ по LINE `destination`/Bot User ID и поля `channel_access_token`, `channel_secret`, `owner_line_id`, `sheet_id`. Поля `name`, `business_type` и `custom_context` передаются модели как контекст конкретного бизнеса.
+Конфигурация клиента требует ключ по LINE `destination`/Bot User ID и поля `channel_access_token`, `channel_secret`, `owner_line_id`, `sheet_id`. Поле `sheet_gid` задаёт ID первой вкладки, которую открывает Rich Menu. Поля `name`, `business_type` и `custom_context` передаются модели как контекст конкретного бизнеса.
 
 ## Проверка
 
@@ -68,7 +68,7 @@ worker: python worker.py
 
 ## Постоянное меню владельца
 
-Персональный Rich Menu привязывается только к `owner_line_id` и необязательному `owner_line_id_2`; обычные пользователи его не получают. Кнопки вызывают существующие команды «подробный отчёт», «деньги», «напоминания» и открывают клиентскую Google Sheets.
+Персональный Rich Menu привязывается только к `owner_line_id` и необязательному `owner_line_id_2`; обычные пользователи его не получают. Кнопки вызывают существующие команды «подробный отчёт», «деньги», «напоминания» и открывают первую вкладку клиентской Google Sheets через настроенный `sheet_gid`. Отчёты отправляются без дублирующих Quick Reply-кнопок.
 
 ```bash
 python3 deploy/configure_owner_rich_menu.py --dry-run

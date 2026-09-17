@@ -21,7 +21,7 @@ class RichMenuTests(unittest.TestCase):
         )
 
     def test_payload_covers_canvas_and_uses_existing_owner_commands(self):
-        payload = rich_menu.menu_payload("sheet-id", b"image")
+        payload = rich_menu.menu_payload("sheet-id", b"image", 1180783168)
         self.assertEqual(payload["size"], {"width": 2500, "height": 843})
         self.assertTrue(payload["selected"])
         self.assertEqual([area["bounds"]["x"] for area in payload["areas"]], [0, 625, 1250, 1875])
@@ -32,13 +32,18 @@ class RichMenuTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["areas"][3]["action"]["uri"],
-            "https://docs.google.com/spreadsheets/d/sheet-id/edit",
+            "https://docs.google.com/spreadsheets/d/sheet-id/edit#gid=1180783168",
         )
+
+    def test_sheet_url_rejects_invalid_gid(self):
+        with self.assertRaisesRegex(ValueError, "only digits"):
+            rich_menu.sheet_url("sheet-id", "0&unexpected=true")
 
     def test_payload_name_changes_with_image_or_sheet(self):
         first = rich_menu.menu_payload("sheet-a", b"image-a")["name"]
         self.assertNotEqual(first, rich_menu.menu_payload("sheet-a", b"image-b")["name"])
         self.assertNotEqual(first, rich_menu.menu_payload("sheet-b", b"image-a")["name"])
+        self.assertNotEqual(first, rich_menu.menu_payload("sheet-a", b"image-a", 123)["name"])
 
     def test_read_env_preserves_json_value(self):
         with tempfile.TemporaryDirectory() as tmp:

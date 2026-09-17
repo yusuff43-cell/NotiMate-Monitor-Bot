@@ -6,6 +6,7 @@
     "channel_access_token": "your_token_here",
     "channel_secret": "your_secret_here",
     "owner_line_id": "owner_line_user_id",
-    "sheet_id": "google_sheet_id"
+    "sheet_id": "google_sheet_id",
+    "sheet_gid": 0
   }
 }

@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 os.environ.setdefault('OPENAI_API_KEY', 'test-key')
@@ -83,6 +83,14 @@ class WebhookTests(unittest.TestCase):
         response = self.post(payload())
         self.assertEqual(response.status_code, 503)
         self.store.register_events.assert_not_called()
+
+    def test_owner_notification_does_not_attach_quick_reply(self):
+        api = Mock()
+        with patch.object(app_module, 'get_line_api', return_value=api):
+            sent = app_module.notify_owner(app_module.CLIENTS['Ubot'], 'Готовый отчёт')
+        self.assertTrue(sent)
+        request = api.push_message.call_args.args[0]
+        self.assertIsNone(request.messages[0].quick_reply)
 
 
 if __name__ == '__main__':

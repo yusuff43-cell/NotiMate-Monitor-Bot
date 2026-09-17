@@ -47,7 +47,17 @@ def validate_png(path: Path) -> bytes:
     return data
 
 
-def menu_payload(sheet_id: str, image: bytes) -> dict[str, Any]:
+def sheet_url(sheet_id: str, sheet_gid: str | int | None = None) -> str:
+    base_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+    if sheet_gid is None or str(sheet_gid).strip() == "":
+        return base_url
+    normalized_gid = str(sheet_gid).strip()
+    if not normalized_gid.isdigit():
+        raise ValueError("sheet_gid must contain only digits")
+    return f"{base_url}#gid={int(normalized_gid)}"
+
+
+def menu_payload(sheet_id: str, image: bytes, sheet_gid: str | int | None = None) -> dict[str, Any]:
     areas = [
         {
             "bounds": {"x": 0, "y": 0, "width": 625, "height": 843},
@@ -66,7 +76,7 @@ def menu_payload(sheet_id: str, image: bytes) -> dict[str, Any]:
             "action": {
                 "type": "uri",
                 "label": "Открыть таблицу",
-                "uri": f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit",
+                "uri": sheet_url(sheet_id, sheet_gid),
             },
         },
     ]
@@ -153,7 +163,7 @@ def configure_client(client: dict[str, Any], image: bytes, dry_run: bool = False
     if missing:
         raise ValueError("Client configuration is missing: " + ", ".join(missing))
 
-    payload = menu_payload(str(client["sheet_id"]), image)
+    payload = menu_payload(str(client["sheet_id"]), image, client.get("sheet_gid"))
     owners = [str(client["owner_line_id"])]
     if client.get("owner_line_id_2"):
         owners.append(str(client["owner_line_id_2"]))
