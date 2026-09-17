@@ -35,8 +35,8 @@ Python, Flask, LINE SDK v3, OpenAI Responses API, gspread, Railway. Целева
 ## Проверка
 
 ```bash
-python3 -m unittest -v test_core.py test_worker.py test_webhook.py
-python3 -m py_compile app.py core.py event_store.py worker.py test_core.py test_worker.py test_webhook.py
+python3 -m unittest -v test_core.py test_worker.py test_webhook.py test_rich_menu.py
+python3 -m py_compile app.py core.py event_store.py worker.py deploy/configure_owner_rich_menu.py test_core.py test_worker.py test_webhook.py test_rich_menu.py
 ```
 
 `/health` проверяет процесс. `/ready` требует доступные Google Sheets и PostgreSQL.
@@ -65,3 +65,14 @@ worker: python worker.py
 Таблица `line_events` создаётся автоматически при запуске и также описана в `migrations/001_line_events.sql`. События после пяти неудачных попыток получают статус `failed` и остаются в PostgreSQL для разбора.
 
 До включения LINE `Webhook redelivery` необходимо развернуть и web, и worker и проверить уникальность события на staging. Повтор всей задачи после частичного сбоя Google Sheets пока может повторить строку: идемпотентность побочных эффектов — следующий обязательный этап.
+
+## Постоянное меню владельца
+
+Персональный Rich Menu привязывается только к `owner_line_id` и необязательному `owner_line_id_2`; обычные пользователи его не получают. Кнопки вызывают существующие команды «подробный отчёт», «деньги», «напоминания» и открывают клиентскую Google Sheets.
+
+```bash
+python3 deploy/configure_owner_rich_menu.py --dry-run
+python3 deploy/configure_owner_rich_menu.py
+```
+
+Скрипт проверяет структуру меню через LINE API, переиспользует уже созданную версию и после привязки запрашивает её обратно для подтверждения. Для обновления дизайна измените `assets/owner-rich-menu.svg`, экспортируйте `assets/owner-rich-menu.png` с точным размером 2500×843 (либо запустите `assets/render_owner_rich_menu.py` с установленным Pillow) и повторно запустите команду. Не выводите содержимое `.env` в терминал.

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2500" height="843" viewBox="0 0 2500 843">
+  <rect width="2500" height="843" fill="#F4F7F5"/>
+  <rect width="2500" height="154" fill="#16352E"/>
+  <text x="80" y="94" fill="#FFFFFF" font-family="Helvetica Neue, Arial, sans-serif" font-size="58" font-weight="700" letter-spacing="-1">NotiMate</text>
+  <text x="2420" y="91" fill="#BFD4CB" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="600" text-anchor="end" letter-spacing="4">ПАНЕЛЬ ВЛАДЕЛЬЦА</text>
+
+  <g transform="translate(32 184)">
+    <rect width="561" height="618" rx="34" fill="#FFFFFF" stroke="#D7E1DC" stroke-width="4"/>
+    <circle cx="280.5" cy="164" r="76" fill="#DDF1E8"/>
+    <g transform="translate(232 116)" fill="none" stroke="#18755D" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="8" y="4" width="82" height="96" rx="8"/>
+      <path d="M28 31h42M28 54h42M28 77h26"/>
+      <path d="M25 4v-16h48V4"/>
+    </g>
+    <text x="280.5" y="324" fill="#16352E" font-family="Helvetica Neue, Arial, sans-serif" font-size="48" font-weight="750" text-anchor="middle">ПОДРОБНЫЙ</text>
+    <text x="280.5" y="383" fill="#16352E" font-family="Helvetica Neue, Arial, sans-serif" font-size="48" font-weight="750" text-anchor="middle">ОТЧЁТ</text>
+    <text x="280.5" y="465" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">Остатки и</text>
+    <text x="280.5" y="506" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">рекомендации</text>
+    <path d="M246 558h69M290 533l25 25-25 25" fill="none" stroke="#18755D" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(657 184)">
+    <rect width="561" height="618" rx="34" fill="#FFFFFF" stroke="#D7E1DC" stroke-width="4"/>
+    <circle cx="280.5" cy="164" r="76" fill="#FFF0D2"/>
+    <g transform="translate(229 111)" fill="none" stroke="#B97812" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="52" cy="53" r="48"/>
+      <path d="M52 20v66M69 31c-8-10-34-10-34 6 0 22 34 11 34 31 0 17-28 17-37 5"/>
+    </g>
+    <text x="280.5" y="355" fill="#16352E" font-family="Helvetica Neue, Arial, sans-serif" font-size="54" font-weight="750" text-anchor="middle">ДЕНЬГИ</text>
+    <text x="280.5" y="465" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">Выручка и</text>
+    <text x="280.5" y="506" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">расходы</text>
+    <path d="M246 558h69M290 533l25 25-25 25" fill="none" stroke="#B97812" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(1282 184)">
+    <rect width="561" height="618" rx="34" fill="#FFFFFF" stroke="#D7E1DC" stroke-width="4"/>
+    <circle cx="280.5" cy="164" r="76" fill="#FBE3DF"/>
+    <g transform="translate(230 111)" fill="none" stroke="#C45646" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 72h67c-11-11-14-25-14-41 0-25-15-40-35-40S1 6 1 31c0 16-3 30-14 41h31" transform="translate(15 12)"/>
+      <path d="M40 94c5 13 25 13 30 0"/>
+    </g>
+    <text x="280.5" y="355" fill="#16352E" font-family="Helvetica Neue, Arial, sans-serif" font-size="47" font-weight="750" text-anchor="middle">НАПОМИНАНИЯ</text>
+    <text x="280.5" y="465" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">Важное на</text>
+    <text x="280.5" y="506" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">7 дней</text>
+    <path d="M246 558h69M290 533l25 25-25 25" fill="none" stroke="#C45646" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g transform="translate(1907 184)">
+    <rect width="561" height="618" rx="34" fill="#FFFFFF" stroke="#D7E1DC" stroke-width="4"/>
+    <circle cx="280.5" cy="164" r="76" fill="#E2E8F7"/>
+    <g transform="translate(228 112)" fill="none" stroke="#536AA7" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="5" width="101" height="96" rx="8"/>
+      <path d="M3 38h101M37 38v63M70 38v63M3 69h101"/>
+    </g>
+    <text x="280.5" y="355" fill="#16352E" font-family="Helvetica Neue, Arial, sans-serif" font-size="54" font-weight="750" text-anchor="middle">ТАБЛИЦА</text>
+    <text x="280.5" y="465" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">Открыть</text>
+    <text x="280.5" y="506" fill="#64756F" font-family="Helvetica Neue, Arial, sans-serif" font-size="30" font-weight="500" text-anchor="middle">Google Sheets</text>
+    <path d="M246 558h69M290 533l25 25-25 25" fill="none" stroke="#536AA7" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

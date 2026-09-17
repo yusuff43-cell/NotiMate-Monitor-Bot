@@ -50,3 +50,12 @@ sudo systemctl status notimate-monitor-backup.timer --no-pager
 ## LINE
 
 После успешного `/ready` установить webhook URL `https://monitor.notimateapp.com/webhook`. До проверки идемпотентности Google Sheets не включать Webhook redelivery.
+
+Постоянное меню отчётов назначается персонально владельцу после заполнения `.env`:
+
+```bash
+python3 deploy/configure_owner_rich_menu.py --dry-run
+python3 deploy/configure_owner_rich_menu.py
+```
+
+Команда не назначает меню по умолчанию всем пользователям: она связывает Rich Menu только с LINE User ID владельцев из `CLIENTS_JSON` и проверяет получившуюся привязку через API.
