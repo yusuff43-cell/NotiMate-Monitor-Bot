@@ -20,28 +20,27 @@ def grid_range(sheet_id, row_start, row_end, column_start, column_end):
     }
 
 
-def chart(title, chart_type, sheet_id, domain, series, anchor_column):
+def chart(title, chart_type, sheet_id, domain, series, anchor_column, axes=None):
     return {
         'addChart': {
             'chart': {
                 'spec': {
                     'title': title,
+                    'hiddenDimensionStrategy': 'SHOW_ALL',
                     'basicChart': {
                         'chartType': chart_type,
                         'legendPosition': 'BOTTOM_LEGEND',
                         'headerCount': 1,
                         'domains': [{'domain': {'sourceRange': {'sources': [domain]}}}],
-                        'series': [
-                            {'series': {'sourceRange': {'sources': [source]}}, 'targetAxis': 'LEFT_AXIS'}
-                            for source in series
-                        ],
+                        'series': series,
+                        'axis': axes or [],
                     },
                 },
                 'position': {
                     'overlayPosition': {
                         'anchorCell': {'sheetId': sheet_id, 'rowIndex': 11, 'columnIndex': anchor_column},
-                        'widthPixels': 430,
-                        'heightPixels': 250,
+                        'widthPixels': 470,
+                        'heightPixels': 270,
                     },
                 },
             },
@@ -67,9 +66,26 @@ def main():
     ]
     requests.extend([
         {
+            'updateSheetProperties': {
+                'properties': {
+                    'sheetId': sheet_id,
+                    'index': 0,
+                    'tabColor': {'red': 0.13, 'green': 0.31, 'blue': 0.24},
+                },
+                'fields': 'index,tabColor',
+            },
+        },
+        {
             'updateDimensionProperties': {
                 'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': 8},
                 'properties': {'pixelSize': 125},
+                'fields': 'pixelSize',
+            },
+        },
+        {
+            'updateDimensionProperties': {
+                'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': 0, 'endIndex': 1},
+                'properties': {'pixelSize': 32},
                 'fields': 'pixelSize',
             },
         },
@@ -87,14 +103,22 @@ def main():
             },
         },
         chart(
-            'Выручка и расходы за 14 дней', 'LINE', sheet_id,
-            grid_range(sheet_id, 1, 15, 9, 10),
-            [grid_range(sheet_id, 1, 15, 10, 11), grid_range(sheet_id, 1, 15, 11, 12)], 0,
+            'Выручка и расходы за 14 дней', 'COMBO', sheet_id,
+            grid_range(sheet_id, 0, 15, 9, 10),
+            [
+                {'series': {'sourceRange': {'sources': [grid_range(sheet_id, 0, 15, 10, 11)]}}, 'targetAxis': 'LEFT_AXIS', 'type': 'LINE', 'color': {'red': 0.12, 'green': 0.36, 'blue': 0.72}},
+                {'series': {'sourceRange': {'sources': [grid_range(sheet_id, 0, 15, 11, 12)]}}, 'targetAxis': 'RIGHT_AXIS', 'type': 'COLUMN', 'color': {'red': 0.78, 'green': 0.28, 'blue': 0.25}},
+            ], 0,
+            [
+                {'position': 'BOTTOM_AXIS', 'title': 'Дата'},
+                {'position': 'LEFT_AXIS', 'title': 'Выручка, THB'},
+                {'position': 'RIGHT_AXIS', 'title': 'Расходы, THB'},
+            ],
         ),
         chart(
-            'Расходы по поставщикам за месяц', 'COLUMN', sheet_id,
-            grid_range(sheet_id, 20, 27, 9, 10),
-            [grid_range(sheet_id, 20, 27, 10, 11)], 4,
+            'Расходы по поставщикам за месяц', 'BAR', sheet_id,
+            grid_range(sheet_id, 19, 27, 9, 10),
+            [{'series': {'sourceRange': {'sources': [grid_range(sheet_id, 19, 27, 10, 11)]}}, 'targetAxis': 'BOTTOM_AXIS', 'color': {'red': 0.12, 'green': 0.36, 'blue': 0.72}}], 4,
         ),
     ])
     sh.batch_update({'requests': requests})

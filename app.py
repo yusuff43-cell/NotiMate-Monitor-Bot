@@ -483,14 +483,31 @@ def _rows_for_date(rows, date_prefix, amount_field):
     return sum(_money(row.get(amount_field)) for row in rows if str(row.get('Дата', '')).startswith(date_prefix))
 
 
+def _available_business_dates(*row_sets):
+    dates = set()
+    for rows in row_sets:
+        for row in rows:
+            candidate = str(row.get('Дата', '')).strip()[:10]
+            try:
+                datetime.datetime.strptime(candidate, '%Y-%m-%d')
+                dates.add(candidate)
+            except ValueError:
+                continue
+    return sorted(dates)
+
+
+def _dashboard_label(value, limit=22):
+    """Keep chart labels scannable without changing source worksheet data."""
+    label = ' '.join(str(value or '').split()) or 'Без поставщика'
+    return label if len(label) <= limit else f'{label[:limit - 1].rstrip()}…'
+
+
 def refresh_overview(client_cfg):
     """Refresh the owner dashboard after a confirmed projection."""
     if not gc:
         raise RuntimeError('Google Sheets is not ready')
     tz = pytz.timezone('Asia/Bangkok')
     now = datetime.datetime.now(tz)
-    today = now.strftime('%Y-%m-%d')
-    month = now.strftime('%Y-%m')
     sh = gc.open_by_key(client_cfg['sheet_id'])
 
     try:
@@ -501,13 +518,17 @@ def refresh_overview(client_cfg):
         expense_rows = sh.worksheet('Расходы').get_all_records()
     except Exception:
         expense_rows = []
-    revenue_today = _rows_for_date(revenue_rows, today, 'Gross Sales')
-    expenses_today = _rows_for_date(expense_rows, today, 'Сумма (THB)')
+    available_dates = _available_business_dates(revenue_rows, expense_rows)
+    dashboard_date = available_dates[-1] if available_dates else now.strftime('%Y-%m-%d')
+    dashboard_day = datetime.datetime.strptime(dashboard_date, '%Y-%m-%d').replace(tzinfo=tz)
+    month = dashboard_date[:7]
+    revenue_today = _rows_for_date(revenue_rows, dashboard_date, 'Gross Sales')
+    expenses_today = _rows_for_date(expense_rows, dashboard_date, 'Сумма (THB)')
     revenue_month = _rows_for_date(revenue_rows, month, 'Gross Sales')
     expenses_month = _rows_for_date(expense_rows, month, 'Сумма (THB)')
     daily = {}
     for offset in range(13, -1, -1):
-        day = (now - datetime.timedelta(days=offset)).strftime('%Y-%m-%d')
+        day = (dashboard_day - datetime.timedelta(days=offset)).strftime('%Y-%m-%d')
         daily[day] = [
             _rows_for_date(revenue_rows, day, 'Gross Sales'),
             _rows_for_date(expense_rows, day, 'Сумма (THB)'),
@@ -540,10 +561,10 @@ def refresh_overview(client_cfg):
     reminders = upcoming_reminders(sh, now, days_limit=14, limit=10)
 
     values = [
-        ['NotiMate · Обзор владельца', '', '', '', '', '', '', ''],
-        ['Обновлено (Bangkok)', now.strftime('%Y-%m-%d %H:%M'), '', '', '', '', '', ''],
+        ['', '', '', '', '', '', '', ''],
+        ['Обновлено (Bangkok)', now.strftime('%Y-%m-%d %H:%M'), 'Последний день данных', dashboard_date, '', '', '', ''],
         [],
-        ['Выручка сегодня', '', 'Расходы сегодня', '', 'Результат сегодня', '', 'Критичных позиций', ''],
+        [f'Выручка · {dashboard_date}', '', f'Расходы · {dashboard_date}', '', 'Результат дня', '', 'Критичных позиций', ''],
         [revenue_today, '', expenses_today, '', revenue_today - expenses_today, '', len(critical), ''],
         ['Выручка за месяц', '', 'Расходы за месяц', '', 'Результат за месяц', '', 'Сроков ≤ 14 дней', ''],
         [revenue_month, '', expenses_month, '', revenue_month - expenses_month, '', len(reminders), ''],
@@ -566,7 +587,7 @@ def refresh_overview(client_cfg):
             + (reminder_rows[index] if index < len(reminder_rows) else ['', '', ''])
         )
     trend_rows = [['Дата', 'Выручка (THB)', 'Расходы (THB)']] + [[day, revenue, expense] for day, (revenue, expense) in daily.items()]
-    supplier_rows = [['Поставщик', 'Расходы (THB)']] + [[supplier, amount] for supplier, amount in top_suppliers]
+    supplier_rows = [['Поставщик', 'Расходы (THB)']] + [[_dashboard_label(supplier), amount] for supplier, amount in top_suppliers]
 
     try:
         ws = sh.worksheet('Обзор')
@@ -575,16 +596,38 @@ def refresh_overview(client_cfg):
     if getattr(ws, 'col_count', 12) < 12:
         ws.add_cols(12 - ws.col_count)
     ws.batch_clear(['A1:L40'])
-    ws.update(values=values, range_name=f'A1:H{len(values)}', value_input_option='USER_ENTERED')
+    ws.update(values=values[1:], range_name=f'A2:H{len(values)}', value_input_option='USER_ENTERED')
+    ws.update(values=[['NotiMate · Обзор владельца']], range_name='A1', value_input_option='USER_ENTERED')
     ws.update(values=trend_rows, range_name=f'J1:L{len(trend_rows)}', value_input_option='USER_ENTERED')
     ws.update(values=supplier_rows, range_name=f'J20:K{19 + len(supplier_rows)}', value_input_option='USER_ENTERED')
     dark_green = {'red': 0.13, 'green': 0.31, 'blue': 0.24}
-    ws.format('A1:H1', {'backgroundColor': dark_green, 'textFormat': {'bold': True, 'fontSize': 16, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}, 'verticalAlignment': 'MIDDLE'})
-    ws.format('A2:H2', {'textFormat': {'italic': True, 'foregroundColor': {'red': 0.35, 'green': 0.4, 'blue': 0.38}}})
-    ws.format('A4:H4', {'backgroundColor': {'red': 0.87, 'green': 0.93, 'blue': 0.89}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
-    ws.format('A5:H5', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
-    ws.format('A6:H6', {'backgroundColor': {'red': 0.92, 'green': 0.95, 'blue': 0.93}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
-    ws.format('A7:H7', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    if hasattr(ws, 'merge_cells'):
+        try:
+            ws.merge_cells('A1:H1')
+        except Exception:
+            pass
+    ws.format('A1:H1', {'backgroundColor': dark_green, 'textFormat': {'bold': True, 'fontSize': 14, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}, 'verticalAlignment': 'MIDDLE'})
+    ws.format('A2:H2', {'textFormat': {'italic': True, 'fontSize': 9, 'foregroundColor': {'red': 0.35, 'green': 0.4, 'blue': 0.38}}})
+    result_color = {'red': 0.88, 'green': 0.94, 'blue': 0.89} if revenue_today >= expenses_today else {'red': 0.98, 'green': 0.89, 'blue': 0.89}
+    month_result_color = {'red': 0.88, 'green': 0.94, 'blue': 0.89} if revenue_month >= expenses_month else {'red': 0.98, 'green': 0.89, 'blue': 0.89}
+    cards = [
+        ('A4:B5', {'red': 0.89, 'green': 0.95, 'blue': 0.91}),
+        ('C4:D5', {'red': 0.98, 'green': 0.92, 'blue': 0.89}),
+        ('E4:F5', result_color),
+        ('G4:H5', {'red': 0.96, 'green': 0.93, 'blue': 0.82}),
+        ('A6:B7', {'red': 0.9, 'green': 0.95, 'blue': 0.92}),
+        ('C6:D7', {'red': 0.98, 'green': 0.93, 'blue': 0.9}),
+        ('E6:F7', month_result_color),
+        ('G6:H7', {'red': 0.96, 'green': 0.93, 'blue': 0.82}),
+    ]
+    for cell_range, color in cards:
+        ws.format(cell_range, {'backgroundColor': color, 'horizontalAlignment': 'CENTER', 'verticalAlignment': 'MIDDLE'})
+    ws.format('A4:H4', {'textFormat': {'bold': True, 'fontSize': 9}, 'horizontalAlignment': 'CENTER'})
+    ws.format('A5:F5', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    ws.format('G5:H5', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+    ws.format('A6:H6', {'textFormat': {'bold': True, 'fontSize': 9}, 'horizontalAlignment': 'CENTER'})
+    ws.format('A7:F7', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    ws.format('G7:H7', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
     ws.format('A9:D9', {'backgroundColor': {'red': 0.97, 'green': 0.86, 'blue': 0.86}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
     ws.format('F9:H9', {'backgroundColor': {'red': 0.95, 'green': 0.91, 'blue': 0.78}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
     ws.format('J1:L40', {'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}})

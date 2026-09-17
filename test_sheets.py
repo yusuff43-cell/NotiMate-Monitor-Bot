@@ -140,7 +140,7 @@ class SheetsIdempotencyTests(unittest.TestCase):
             app_module.refresh_overview(self.cfg)
         rows = self.spreadsheet.worksheet('Обзор').rows
         flat = ' '.join(str(cell) for row in rows for cell in row)
-        self.assertIn('Выручка сегодня', flat)
+        self.assertIn('Выручка · 2026-09-17', flat)
         self.assertIn('Молоко', flat)
         self.assertIn('Лицензия', flat)
 
