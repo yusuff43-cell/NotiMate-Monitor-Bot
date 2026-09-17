@@ -560,17 +560,63 @@ def refresh_overview(client_cfg):
         pass
     reminders = upcoming_reminders(sh, now, days_limit=14, limit=10)
 
-    values = [
-        ['', '', '', '', '', '', '', ''],
-        ['Обновлено (Bangkok)', now.strftime('%Y-%m-%d %H:%M'), 'Последний день данных', dashboard_date, '', '', '', ''],
-        [],
-        [f'Выручка · {dashboard_date}', '', f'Расходы · {dashboard_date}', '', 'Результат дня', '', 'Критичных позиций', ''],
-        [revenue_today, '', expenses_today, '', revenue_today - expenses_today, '', len(critical), ''],
-        ['Выручка за месяц', '', 'Расходы за месяц', '', 'Результат за месяц', '', 'Сроков ≤ 14 дней', ''],
-        [revenue_month, '', expenses_month, '', revenue_month - expenses_month, '', len(reminders), ''],
-        [],
-        ['Критичные остатки', 'Статус', 'Холодильник', 'Морозилка', '', 'Ближайшие сроки', 'Дата', 'Дней'],
+    values = [['' for _ in range(18)] for _ in range(37)]
+
+    def put(row, column, value):
+        values[row - 1][column - 1] = value
+
+    display_date = dashboard_day.strftime('%d.%m.%Y')
+    put(1, 1, 'NotiMate')
+    put(3, 1, 'Ваш бизнес под контролем')
+    put(1, 4, 'Обзор владельца')
+    put(3, 4, 'Продажи · Расходы · Остатки · Сроки годности')
+    put(1, 11, 'Период')
+    put(2, 11, display_date)
+    put(1, 14, 'Обновлено (Bangkok)')
+    put(2, 14, now.strftime('%d.%m.%Y %H:%M'))
+    put(3, 14, f'Последний день данных: {display_date}')
+    put(1, 17, 'Данные из Google Sheets')
+    put(3, 17, 'Обновляется автоматически')
+
+    cards = [
+        (1, f'Выручка · {display_date}', revenue_today, 'Выручка за месяц', revenue_month),
+        (5, f'Расходы · {display_date}', expenses_today, 'Расходы за месяц', expenses_month),
+        (9, 'Результат дня', revenue_today - expenses_today, 'Результат за месяц', revenue_month - expenses_month),
+        (13, 'Критичных позиций', len(critical), 'Сроков ≤ 14 дней', len(reminders)),
     ]
+    for column, day_label, day_value, month_label, month_value in cards:
+        put(5, column, day_label)
+        put(6, column, day_value)
+        put(8, column, month_label)
+        put(9, column, month_value)
+
+    put(12, 15, 'Товары по срокам годности')
+    put(14, 15, f'{len(reminders)}\nтоваров ≤ 14 дней')
+    if reminders:
+        left, title, expiry = reminders[0]
+        put(18, 15, f'Ближайший: {title} · {left} дн.')
+    put(19, 15, 'Нет сроков в ближайшие 14 дней' if not reminders else 'Проверьте ближайшие сроки')
+    put(21, 15, 'Отлично! Можно не беспокоиться.' if not reminders else 'Откройте вкладку «Напоминания».')
+    put(26, 1, 'Критичные остатки')
+    put(27, 1, 'Товар')
+    put(27, 5, 'Статус')
+    put(27, 7, 'Холодильник')
+    put(27, 9, 'Морозилка')
+    put(26, 10, 'Финансовый итог за месяц')
+    put(28, 10, 'Выручка')
+    put(29, 10, 'Расходы')
+    put(30, 10, 'Результат')
+    put(28, 14, revenue_month)
+    put(29, 14, expenses_month)
+    put(30, 14, revenue_month - expenses_month)
+    put(32, 10, 'Убыток за месяц' if revenue_month < expenses_month else 'Результат за месяц')
+    put(33, 10, f"Расходы превышают выручку на {abs(revenue_month - expenses_month):,.0f} THB" if revenue_month < expenses_month else 'Выручка превышает расходы.')
+    put(26, 15, 'Быстрые действия')
+    put(28, 15, 'Добавить покупку — напишите в LINE')
+    put(30, 15, 'Проверить остатки')
+    put(32, 15, 'Открыть отчёты')
+    put(34, 15, 'Настройки и напоминания')
+    put(37, 1, 'NotiMate  ·  Данные из Google Sheets  ·  Обновляется автоматически')
     if critical:
         critical_rows = [[row.get('Продукт', ''), row.get('Примечание', ''), row.get('Холодильник', ''), row.get('Морозилка', '')] for row in critical]
     else:
@@ -579,13 +625,11 @@ def refresh_overview(client_cfg):
         reminder_rows = [[title, expiry, left] for left, title, expiry in reminders]
     else:
         reminder_rows = [['Нет сроков в ближайшие 14 дней', '', '']]
-    detail_rows = max(len(critical_rows), len(reminder_rows))
-    for index in range(detail_rows):
-        values.append(
-            (critical_rows[index] if index < len(critical_rows) else ['', '', '', ''])
-            + ['']
-            + (reminder_rows[index] if index < len(reminder_rows) else ['', '', ''])
-        )
+    for index, row in enumerate(critical_rows[:7], start=28):
+        put(index, 1, row[0])
+        put(index, 5, row[1])
+        put(index, 7, row[2])
+        put(index, 9, row[3])
     trend_rows = [['Дата', 'Выручка (THB)', 'Расходы (THB)']] + [[day, revenue, expense] for day, (revenue, expense) in daily.items()]
     supplier_rows = [['Поставщик', 'Расходы (THB)']] + [[_dashboard_label(supplier), amount] for supplier, amount in top_suppliers]
 
@@ -593,44 +637,90 @@ def refresh_overview(client_cfg):
         ws = sh.worksheet('Обзор')
     except Exception:
         ws = sh.add_worksheet(title='Обзор', rows=100, cols=12)
-    if getattr(ws, 'col_count', 12) < 12:
-        ws.add_cols(12 - ws.col_count)
-    ws.batch_clear(['A1:L40'])
-    ws.update(values=values[1:], range_name=f'A2:H{len(values)}', value_input_option='USER_ENTERED')
-    ws.update(values=[['NotiMate · Обзор владельца']], range_name='A1', value_input_option='USER_ENTERED')
-    ws.update(values=trend_rows, range_name=f'J1:L{len(trend_rows)}', value_input_option='USER_ENTERED')
-    ws.update(values=supplier_rows, range_name=f'J20:K{19 + len(supplier_rows)}', value_input_option='USER_ENTERED')
-    dark_green = {'red': 0.13, 'green': 0.31, 'blue': 0.24}
-    if hasattr(ws, 'merge_cells'):
+    if getattr(ws, 'col_count', 22) < 22:
+        ws.add_cols(22 - ws.col_count)
+    if hasattr(ws, 'unmerge_cells'):
         try:
-            ws.merge_cells('A1:H1')
+            ws.unmerge_cells('A1:R40')
         except Exception:
             pass
-    ws.format('A1:H1', {'backgroundColor': dark_green, 'textFormat': {'bold': True, 'fontSize': 14, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}, 'verticalAlignment': 'MIDDLE'})
-    ws.format('A2:H2', {'textFormat': {'italic': True, 'fontSize': 9, 'foregroundColor': {'red': 0.35, 'green': 0.4, 'blue': 0.38}}})
+    ws.batch_clear(['A1:V45'])
+    ws.update(values=values, range_name='A1:R37', value_input_option='USER_ENTERED')
+    ws.update(values=trend_rows, range_name=f'T1:V{len(trend_rows)}', value_input_option='USER_ENTERED')
+    ws.update(values=supplier_rows, range_name=f'T20:U{19 + len(supplier_rows)}', value_input_option='USER_ENTERED')
+    dark_green = {'red': 0.13, 'green': 0.31, 'blue': 0.24}
+    light_green = {'red': 0.94, 'green': 0.98, 'blue': 0.95}
+    pale_green = {'red': 0.9, 'green': 0.96, 'blue': 0.92}
+    pale_red = {'red': 0.99, 'green': 0.91, 'blue': 0.91}
+    pale_amber = {'red': 1.0, 'green': 0.96, 'blue': 0.86}
+    pale_blue = {'red': 0.91, 'green': 0.95, 'blue': 1.0}
+    merged_ranges = [
+        'A1:C2', 'D1:I2', 'K1:M2', 'N1:P2', 'Q1:R2',
+        'A5:D5', 'A6:D7', 'A8:D8', 'A9:D10',
+        'E5:H5', 'E6:H7', 'E8:H8', 'E9:H10',
+        'I5:L5', 'I6:L7', 'I8:L8', 'I9:L10',
+        'M5:R5', 'M6:R7', 'M8:R8', 'M9:R10',
+        'O12:R12', 'O14:R17', 'O18:R18', 'O19:R20', 'O21:R22',
+        'A26:I26', 'J26:N26', 'O26:R26', 'J32:N32', 'J33:N34',
+        'O28:R28', 'O30:R30', 'O32:R32', 'O34:R34', 'A37:R37',
+    ]
+    if hasattr(ws, 'merge_cells'):
+        for cell_range in merged_ranges:
+            try:
+                ws.merge_cells(cell_range)
+            except Exception:
+                pass
+    format_requests = []
+
+    def format_sheet(cell_range, style):
+        format_requests.append({'range': cell_range, 'format': style})
+
+    format_sheet('A1:R3', {'backgroundColor': light_green, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('A1:C2', {'textFormat': {'bold': True, 'fontSize': 16, 'foregroundColor': dark_green}, 'horizontalAlignment': 'CENTER'})
+    format_sheet('A3:C3', {'textFormat': {'italic': True, 'fontSize': 9, 'foregroundColor': {'red': 0.2, 'green': 0.45, 'blue': 0.31}}, 'horizontalAlignment': 'CENTER'})
+    format_sheet('D1:I2', {'textFormat': {'bold': True, 'fontSize': 16, 'foregroundColor': {'red': 0.05, 'green': 0.12, 'blue': 0.23}}, 'verticalAlignment': 'BOTTOM'})
+    format_sheet('D3:I3', {'textFormat': {'fontSize': 10, 'foregroundColor': {'red': 0.33, 'green': 0.39, 'blue': 0.46}}})
+    format_sheet('K1:M2', {'backgroundColor': {'red': 1, 'green': 1, 'blue': 1}, 'textFormat': {'bold': True, 'fontSize': 10}, 'horizontalAlignment': 'CENTER', 'verticalAlignment': 'MIDDLE'})
+    format_sheet('N1:P3', {'textFormat': {'fontSize': 9, 'foregroundColor': {'red': 0.33, 'green': 0.39, 'blue': 0.46}}, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('Q1:R3', {'textFormat': {'italic': True, 'fontSize': 9, 'foregroundColor': {'red': 0.2, 'green': 0.45, 'blue': 0.31}}, 'horizontalAlignment': 'CENTER', 'verticalAlignment': 'MIDDLE'})
     result_color = {'red': 0.88, 'green': 0.94, 'blue': 0.89} if revenue_today >= expenses_today else {'red': 0.98, 'green': 0.89, 'blue': 0.89}
-    month_result_color = {'red': 0.88, 'green': 0.94, 'blue': 0.89} if revenue_month >= expenses_month else {'red': 0.98, 'green': 0.89, 'blue': 0.89}
     cards = [
-        ('A4:B5', {'red': 0.89, 'green': 0.95, 'blue': 0.91}),
-        ('C4:D5', {'red': 0.98, 'green': 0.92, 'blue': 0.89}),
-        ('E4:F5', result_color),
-        ('G4:H5', {'red': 0.96, 'green': 0.93, 'blue': 0.82}),
-        ('A6:B7', {'red': 0.9, 'green': 0.95, 'blue': 0.92}),
-        ('C6:D7', {'red': 0.98, 'green': 0.93, 'blue': 0.9}),
-        ('E6:F7', month_result_color),
-        ('G6:H7', {'red': 0.96, 'green': 0.93, 'blue': 0.82}),
+        ('A5:D10', pale_green), ('E5:H10', pale_red), ('I5:L10', result_color), ('M5:R10', pale_amber),
     ]
     for cell_range, color in cards:
-        ws.format(cell_range, {'backgroundColor': color, 'horizontalAlignment': 'CENTER', 'verticalAlignment': 'MIDDLE'})
-    ws.format('A4:H4', {'textFormat': {'bold': True, 'fontSize': 9}, 'horizontalAlignment': 'CENTER'})
-    ws.format('A5:F5', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
-    ws.format('G5:H5', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
-    ws.format('A6:H6', {'textFormat': {'bold': True, 'fontSize': 9}, 'horizontalAlignment': 'CENTER'})
-    ws.format('A7:F7', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
-    ws.format('G7:H7', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
-    ws.format('A9:D9', {'backgroundColor': {'red': 0.97, 'green': 0.86, 'blue': 0.86}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
-    ws.format('F9:H9', {'backgroundColor': {'red': 0.95, 'green': 0.91, 'blue': 0.78}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
-    ws.format('J1:L40', {'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}})
+        format_sheet(cell_range, {'backgroundColor': color, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('A5:R5', {'textFormat': {'bold': True, 'fontSize': 10, 'foregroundColor': {'red': 0.12, 'green': 0.18, 'blue': 0.28}}})
+    format_sheet('A6:L7', {'textFormat': {'bold': True, 'fontSize': 18}, 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    format_sheet('M6:R7', {'textFormat': {'bold': True, 'fontSize': 18}, 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+    format_sheet('A8:R8', {'textFormat': {'bold': True, 'fontSize': 10, 'foregroundColor': {'red': 0.2, 'green': 0.27, 'blue': 0.34}}})
+    format_sheet('A9:L10', {'textFormat': {'bold': True, 'fontSize': 16}, 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    format_sheet('M9:R10', {'textFormat': {'bold': True, 'fontSize': 16}, 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0'}})
+    format_sheet('O12:R22', {'backgroundColor': pale_blue, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('O12:R12', {'textFormat': {'bold': True, 'fontSize': 11}})
+    format_sheet('O14:R17', {'textFormat': {'bold': True, 'fontSize': 18, 'foregroundColor': {'red': 0.05, 'green': 0.12, 'blue': 0.23}}, 'horizontalAlignment': 'CENTER', 'wrapStrategy': 'WRAP'})
+    format_sheet('O18:R18', {'textFormat': {'fontSize': 9, 'foregroundColor': {'red': 0.33, 'green': 0.39, 'blue': 0.46}}})
+    format_sheet('O19:R20', {'backgroundColor': pale_green, 'textFormat': {'bold': True, 'fontSize': 10, 'foregroundColor': {'red': 0.1, 'green': 0.42, 'blue': 0.22}}, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('O21:R22', {'backgroundColor': pale_green, 'textFormat': {'fontSize': 9, 'foregroundColor': {'red': 0.1, 'green': 0.42, 'blue': 0.22}}})
+    format_sheet('A26:I26', {'backgroundColor': pale_red, 'textFormat': {'bold': True, 'fontSize': 12}, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('A27:I27', {'backgroundColor': {'red': 0.96, 'green': 0.97, 'blue': 0.98}, 'textFormat': {'bold': True, 'fontSize': 9}, 'horizontalAlignment': 'CENTER'})
+    format_sheet('A28:I34', {'verticalAlignment': 'MIDDLE'})
+    format_sheet('E28:F34', {'backgroundColor': pale_amber, 'horizontalAlignment': 'CENTER'})
+    format_sheet('J26:N26', {'backgroundColor': pale_blue, 'textFormat': {'bold': True, 'fontSize': 12}, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('J28:N30', {'verticalAlignment': 'MIDDLE'})
+    format_sheet('N28:N28', {'textFormat': {'bold': True, 'foregroundColor': {'red': 0.1, 'green': 0.45, 'blue': 0.22}}, 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    format_sheet('N29:N30', {'textFormat': {'bold': True, 'foregroundColor': {'red': 0.8, 'green': 0.15, 'blue': 0.15}}, 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    format_sheet('J32:N34', {'backgroundColor': pale_red, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('J32:N32', {'textFormat': {'bold': True, 'fontSize': 11, 'foregroundColor': {'red': 0.75, 'green': 0.14, 'blue': 0.14}}})
+    format_sheet('J33:N34', {'textFormat': {'fontSize': 9, 'foregroundColor': {'red': 0.65, 'green': 0.2, 'blue': 0.2}}})
+    format_sheet('O26:R26', {'backgroundColor': pale_amber, 'textFormat': {'bold': True, 'fontSize': 12}, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('O28:R34', {'backgroundColor': {'red': 1, 'green': 1, 'blue': 1}, 'textFormat': {'fontSize': 10}, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('A37:R37', {'backgroundColor': light_green, 'textFormat': {'fontSize': 9, 'foregroundColor': {'red': 0.25, 'green': 0.4, 'blue': 0.32}}, 'verticalAlignment': 'MIDDLE'})
+    format_sheet('T1:V45', {'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}})
+    if hasattr(ws, 'batch_format'):
+        ws.batch_format(format_requests)
+    else:
+        for request in format_requests:
+            ws.format(request['range'], request['format'])
     return {'critical': len(critical), 'reminders': len(reminders)}
 
 

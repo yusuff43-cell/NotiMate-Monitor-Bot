@@ -20,7 +20,7 @@ def grid_range(sheet_id, row_start, row_end, column_start, column_end):
     }
 
 
-def chart(title, chart_type, sheet_id, domain, series, anchor_column, axes=None):
+def chart(title, chart_type, sheet_id, domain, series, anchor_column, axes=None, width_pixels=470):
     return {
         'addChart': {
             'chart': {
@@ -39,7 +39,7 @@ def chart(title, chart_type, sheet_id, domain, series, anchor_column, axes=None)
                 'position': {
                     'overlayPosition': {
                         'anchorCell': {'sheetId': sheet_id, 'rowIndex': 11, 'columnIndex': anchor_column},
-                        'widthPixels': 470,
+                        'widthPixels': width_pixels,
                         'heightPixels': 270,
                     },
                 },
@@ -77,21 +77,21 @@ def main():
         },
         {
             'updateDimensionProperties': {
-                'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': 8},
-                'properties': {'pixelSize': 125},
+                'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 0, 'endIndex': 18},
+                'properties': {'pixelSize': 88},
                 'fields': 'pixelSize',
             },
         },
         {
             'updateDimensionProperties': {
-                'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': 0, 'endIndex': 1},
-                'properties': {'pixelSize': 32},
+                'range': {'sheetId': sheet_id, 'dimension': 'ROWS', 'startIndex': 0, 'endIndex': 3},
+                'properties': {'pixelSize': 27},
                 'fields': 'pixelSize',
             },
         },
         {
             'updateDimensionProperties': {
-                'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 9, 'endIndex': 12},
+                'range': {'sheetId': sheet_id, 'dimension': 'COLUMNS', 'startIndex': 19, 'endIndex': 22},
                 'properties': {'hiddenByUser': True},
                 'fields': 'hiddenByUser',
             },
@@ -104,21 +104,21 @@ def main():
         },
         chart(
             'Выручка и расходы за 14 дней', 'COMBO', sheet_id,
-            grid_range(sheet_id, 0, 15, 9, 10),
+            grid_range(sheet_id, 0, 15, 19, 20),
             [
-                {'series': {'sourceRange': {'sources': [grid_range(sheet_id, 0, 15, 10, 11)]}}, 'targetAxis': 'LEFT_AXIS', 'type': 'LINE', 'color': {'red': 0.12, 'green': 0.36, 'blue': 0.72}},
-                {'series': {'sourceRange': {'sources': [grid_range(sheet_id, 0, 15, 11, 12)]}}, 'targetAxis': 'RIGHT_AXIS', 'type': 'COLUMN', 'color': {'red': 0.78, 'green': 0.28, 'blue': 0.25}},
+                {'series': {'sourceRange': {'sources': [grid_range(sheet_id, 0, 15, 20, 21)]}}, 'targetAxis': 'LEFT_AXIS', 'type': 'LINE', 'color': {'red': 0.12, 'green': 0.36, 'blue': 0.72}},
+                {'series': {'sourceRange': {'sources': [grid_range(sheet_id, 0, 15, 21, 22)]}}, 'targetAxis': 'RIGHT_AXIS', 'type': 'COLUMN', 'color': {'red': 0.78, 'green': 0.28, 'blue': 0.25}},
             ], 0,
             [
                 {'position': 'BOTTOM_AXIS', 'title': 'Дата'},
                 {'position': 'LEFT_AXIS', 'title': 'Выручка, THB'},
                 {'position': 'RIGHT_AXIS', 'title': 'Расходы, THB'},
-            ],
+            ], 630,
         ),
         chart(
             'Расходы по поставщикам за месяц', 'BAR', sheet_id,
-            grid_range(sheet_id, 19, 27, 9, 10),
-            [{'series': {'sourceRange': {'sources': [grid_range(sheet_id, 19, 27, 10, 11)]}}, 'targetAxis': 'BOTTOM_AXIS', 'color': {'red': 0.12, 'green': 0.36, 'blue': 0.72}}], 4,
+            grid_range(sheet_id, 19, 27, 19, 20),
+            [{'series': {'sourceRange': {'sources': [grid_range(sheet_id, 19, 27, 20, 21)]}}, 'targetAxis': 'BOTTOM_AXIS', 'color': {'red': 0.12, 'green': 0.36, 'blue': 0.72}}], 8, width_pixels=470,
         ),
     ])
     sh.batch_update({'requests': requests})
