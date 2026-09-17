@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "source": "synthetic",
+  "scenarios": [
+    {
+      "id": "ru_purchase",
+      "channel": "text",
+      "language": "ru",
+      "message": "Нужно заказать молоко 2 упаковки.",
+      "model_output": "{\"type\":\"purchase\",\"items\":[{\"product\":\"Молоко\",\"quantity\":\"2\"}]}",
+      "expected_projection": "Закупки"
+    },
+    {
+      "id": "th_stock",
+      "channel": "text",
+      "language": "th",
+      "message": "อัปเดต น้ำแข็ง เหลือ 1 ถุง",
+      "model_output": "{\"type\":\"stock\",\"items\":[{\"category\":\"Другое\",\"product\":\"Лёд\",\"fridge\":\"1\",\"freezer\":\"0\",\"note\":\"Low stock\"}]}",
+      "expected_projection": "Остатки"
+    },
+    {
+      "id": "en_expense",
+      "channel": "text",
+      "language": "en",
+      "message": "Paid 50 THB for drinking water.",
+      "model_output": "{\"type\":\"text_expense\",\"supplier\":\"Demo shop\",\"items\":[{\"description\":\"вода\"}],\"total\":\"50\"}",
+      "expected_projection": "Расходы"
+    },
+    {
+      "id": "ru_problem",
+      "channel": "text",
+      "language": "ru",
+      "message": "Холодильник не охлаждает.",
+      "model_output": "ВАЖНО [ПРОБЛЕМА]: Холодильник не охлаждает\n💡 Совет: вызвать техника",
+      "expected_projection": "Проблемы"
+    },
+    {
+      "id": "receipt_expense",
+      "channel": "image",
+      "language": "th",
+      "model_output": "{\"doc_type\":\"expense\",\"supplier\":\"Demo market\",\"items\":[{\"description\":\"кофе\",\"amount\":\"120\"}],\"total\":\"120\",\"note\":\"\"}",
+      "expected_projection": "Расходы"
+    },
+    {
+      "id": "shift_report",
+      "channel": "image",
+      "language": "en",
+      "model_output": "{\"doc_type\":\"shift\",\"shift\":\"DEMO-2\",\"gross_sales\":1000,\"cash\":400,\"card\":300,\"qr\":300,\"difference\":0,\"note\":\"\"}",
+      "expected_projection": "Выручка"
+    },
+    {
+      "id": "expiry_reminder",
+      "channel": "image",
+      "language": "ru",
+      "model_output": "{\"doc_type\":\"reminder\",\"title\":\"Демо-лицензия\",\"expiry_date\":\"2026-10-01\",\"note\":\"\"}",
+      "expected_projection": "Напоминания"
+    }
+  ]
+}

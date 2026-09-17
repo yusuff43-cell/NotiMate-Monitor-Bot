@@ -30,7 +30,7 @@ class WorkerTests(unittest.TestCase):
         store = Mock()
         store.claim_next.return_value = EventJob('evt-2', 'bot-1', {}, 2)
         processor = Mock(side_effect=RuntimeError('temporary'))
-        with patch('worker.MAX_ATTEMPTS', 5), self.assertLogs(level='ERROR'):
+        with patch('worker.MAX_ATTEMPTS', 5), self.assertLogs('notimate', level='ERROR'):
             run_once(store, processor)
         store.mark_retry.assert_called_once_with('evt-2', 'RuntimeError: temporary', 2)
         store.mark_failed.assert_not_called()
@@ -39,7 +39,7 @@ class WorkerTests(unittest.TestCase):
         store = Mock()
         store.claim_next.return_value = EventJob('evt-3', 'bot-1', {}, 5)
         processor = Mock(side_effect=ValueError('bad payload'))
-        with patch('worker.MAX_ATTEMPTS', 5), self.assertLogs(level='ERROR'):
+        with patch('worker.MAX_ATTEMPTS', 5), self.assertLogs('notimate', level='ERROR'):
             run_once(store, processor)
         store.mark_failed.assert_called_once_with('evt-3', 'ValueError: bad payload')
         store.mark_retry.assert_not_called()

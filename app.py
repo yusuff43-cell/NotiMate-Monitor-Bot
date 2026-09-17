@@ -23,8 +23,10 @@ import pytz
 
 from core import bangkok_date, bangkok_now, client_prompt_context, days_until, validate_clients
 from event_store import PostgresEventStore
+from logging_utils import get_logger
 
 app = Flask(__name__)
+logger = get_logger()
 
 # ── Глобальные сервисы ──────────────────────────────────────────
 OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-5.6-luna')
@@ -45,8 +47,8 @@ if event_store:
     try:
         event_store.initialize()
         DB_ENABLED = True
-    except Exception as e:
-        print(f"Database init failed: {e}")
+    except Exception as exc:
+        logger.error('database_init_failed', extra={'error_type': type(exc).__name__})
 
 SHEETS_ENABLED = False
 gc = None
@@ -56,8 +58,8 @@ try:
     creds = Credentials.from_service_account_info(creds_json, scopes=scopes)
     gc = gspread.authorize(creds)
     SHEETS_ENABLED = True
-except Exception as e:
-    print(f"Sheets init skipped: {e}")
+except Exception as exc:
+    logger.warning('sheets_init_skipped', extra={'error_type': type(exc).__name__})
 
 _line_api_cache = {}
 
@@ -264,8 +266,8 @@ def notify_owner(client_cfg, msg):
                 messages=[TextMessage(text=msg)],
             ))
         return True
-    except Exception as e:
-        print(f"Notify error: {e}")
+    except Exception as exc:
+        logger.error('owner_notification_failed', extra={'error_type': type(exc).__name__})
         return False
 
 # ── Анализ фото ──────────────────────────────────────────────────
@@ -310,8 +312,8 @@ def check_price_drift(sheet_id, items, supplier, client_cfg, event_id):
             msg += "\n".join(alerts)
             msg += "\n\n💡 Проверьте накладную — поставщик поднял цены."
             notify_owner(client_cfg, msg)
-    except Exception as e:
-        print(f"Price drift error: {e}")
+    except Exception as exc:
+        logger.error('price_drift_check_failed', extra={'event_id': event_id, 'error_type': type(exc).__name__})
 
 
 def analyze_image(image_data, client_cfg):
@@ -468,8 +470,8 @@ def weekly_report(client_cfg):
             800,
         )
         notify_owner(client_cfg, report)
-    except Exception as e:
-        print(f"Weekly report error: {e}")
+    except Exception as exc:
+        logger.error('weekly_report_failed', extra={'error_type': type(exc).__name__})
 
 
 def _money(value):
@@ -786,8 +788,8 @@ def evening_summary(client_cfg):
         else:
             msg += '\n\n🔔 Ближайших напоминаний нет.'
         notify_owner(client_cfg, msg)
-    except Exception as e:
-        print(f"Evening summary error: {e}")
+    except Exception as exc:
+        logger.error('evening_summary_failed', extra={'error_type': type(exc).__name__})
 
 
 def reminders_report(client_cfg):
@@ -805,8 +807,8 @@ def reminders_report(client_cfg):
         else:
             msg = '🔔 На ближайшие 7 дней напоминаний нет.'
         notify_owner(client_cfg, msg)
-    except Exception as e:
-        print(f"Reminders report error: {e}")
+    except Exception as exc:
+        logger.error('reminders_report_failed', extra={'error_type': type(exc).__name__})
 
 
 def owner_menu(client_cfg):
@@ -849,8 +851,8 @@ def detailed_report(client_cfg):
             for left, title, expiry in reminders:
                 report += f"\n⚠️ {title} — истекает через {left} дн. ({expiry})"
         notify_owner(client_cfg, report)
-    except Exception as e:
-        print(f"Detailed report error: {e}")
+    except Exception as exc:
+        logger.error('detailed_report_failed', extra={'error_type': type(exc).__name__})
 
 # ── Webhook ──────────────────────────────────────────────────────
 def process_line_event(destination, event):
@@ -941,12 +943,11 @@ def process_line_event(destination, event):
 
     # ── Фото ──
     elif msg_type == 'image':
-        print(f'Image received, processing...')
+        logger.info('image_processing_started', extra={'event_id': event_id})
         try:
             content = blob_api.get_message_content(msg.get('id'))
             image_data = base64.b64encode(content).decode('utf-8')
             result = analyze_image(image_data, client_cfg)
-            print(f'Image result: {result[:200]}')
             if 'NOT_FINANCE' in result:
                 return
             json_match = re.search(r'\{.*\}', result, re.DOTALL)
@@ -954,6 +955,7 @@ def process_line_event(destination, event):
                 return
             data = json.loads(json_match.group())
             doc_type = data.get('doc_type')
+            logger.info('image_analysis_completed', extra={'event_id': event_id, 'document_type': doc_type or 'unknown'})
             if doc_type == 'shift':
                 save_выручка(client_cfg['sheet_id'], data, date_only, data.get('note',''), event_id)
                 refresh_overview(client_cfg)
@@ -1016,7 +1018,7 @@ def webhook():
     destination = payload.get('destination', '')
     client_cfg = find_client(destination)
     if not client_cfg:
-        print(f"Unknown destination: {destination}")
+        logger.warning('webhook_unknown_destination')
         return 'OK'
 
     signature = request.headers.get('X-Line-Signature', '')
@@ -1035,10 +1037,10 @@ def webhook():
     try:
         accepted, duplicates = event_store.register_events(destination, message_events)
     except Exception as exc:
-        print(f"Event registration failed: {type(exc).__name__}: {exc}")
+        logger.error('event_registration_failed', extra={'error_type': type(exc).__name__})
         return {'status': 'event_registration_failed'}, 503
 
-    print(f"Events registered: accepted={accepted} duplicates={duplicates}")
+    logger.info('events_registered', extra={'accepted': accepted, 'duplicates': duplicates})
     return 'OK'
 
 @app.route("/health", methods=['GET'])
@@ -1068,9 +1070,9 @@ try:
             scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, args=[cfg], id=f"evening_{bot_id}")
             scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
     scheduler.start()
-    print("Scheduler started")
-except Exception as e:
-    print(f"Scheduler error: {e}")
+    logger.info('scheduler_started')
+except Exception as exc:
+    logger.info('scheduler_not_started', extra={'error_type': type(exc).__name__})
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))

@@ -1,6 +1,8 @@
 import importlib
 import json
 import os
+import re
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -18,6 +20,11 @@ os.environ.setdefault('CLIENTS_JSON', json.dumps({
 }))
 
 app_module = importlib.import_module('app')
+FIXTURES_PATH = Path(__file__).with_name('fixtures') / 'line_scenarios.json'
+
+
+def load_scenarios():
+    return json.loads(FIXTURES_PATH.read_text(encoding='utf-8'))['scenarios']
 
 
 class FakeWorksheet:
@@ -145,17 +152,11 @@ class SheetsIdempotencyTests(unittest.TestCase):
         self.assertIn('Лицензия', flat)
 
     def test_ru_th_en_and_image_document_scenarios_are_projected_once(self):
-        text_results = iter([
-            '{"type":"purchase","items":[{"product":"Молоко","quantity":"2"}]}',
-            '{"type":"stock","items":[{"category":"Другое","product":"Лёд","fridge":"1","freezer":"0","note":"Low stock"}]}',
-            '{"type":"text_expense","supplier":"Shop","items":[{"description":"вода"}],"total":"50"}',
-            'ВАЖНО [ПРОБЛЕМА]: Холодильник не охлаждает\\n💡 Совет: вызвать техника',
-        ])
-        image_results = iter([
-            '{"doc_type":"expense","supplier":"Market","items":[{"description":"кофе","amount":"120"}],"total":"120","note":""}',
-            '{"doc_type":"shift","shift":"2","gross_sales":1000,"cash":400,"card":300,"qr":300,"difference":0,"note":""}',
-            '{"doc_type":"reminder","title":"Лицензия","expiry_date":"2026-10-01","note":""}',
-        ])
+        scenarios = load_scenarios()
+        text_cases = [case for case in scenarios if case['channel'] == 'text']
+        image_cases = [case for case in scenarios if case['channel'] == 'image']
+        text_results = iter(case['model_output'] for case in text_cases)
+        image_results = iter(case['model_output'] for case in image_cases)
         blob = Mock()
         blob.get_message_content.return_value = b'not-a-real-image-in-unit-test'
         with patch.object(app_module, 'analyze_text', side_effect=text_results), \
@@ -164,8 +165,8 @@ class SheetsIdempotencyTests(unittest.TestCase):
              patch.object(app_module, 'refresh_overview'), \
              patch.object(app_module, 'notify_owner'):
             # RU purchase, Thai stock, English expense, Russian problem.
-            for index, text in enumerate(['нужно молоко 2', 'อัปเดต น้ำแข็ง 1', 'paid 50 for water', 'холодильник не охлаждает']):
-                app_module.process_line_event('Ubot', message_event(f'text-{index}', 'text', text))
+            for index, case in enumerate(text_cases):
+                app_module.process_line_event('Ubot', message_event(f'text-{index}', 'text', case['message']))
             # Receipt, shift report and deadline document are exercised through the image path.
             for index in range(3):
                 app_module.process_line_event('Ubot', message_event(f'image-{index}', 'image'))
@@ -175,6 +176,18 @@ class SheetsIdempotencyTests(unittest.TestCase):
         self.assertIn('Проблемы', self.spreadsheet.sheets)
         self.assertIn('Выручка', self.spreadsheet.sheets)
         self.assertIn('Напоминания', self.spreadsheet.sheets)
+
+    def test_synthetic_fixtures_cover_required_languages_and_projections(self):
+        scenarios = load_scenarios()
+        self.assertEqual({'ru', 'th', 'en'}, {case['language'] for case in scenarios})
+        self.assertEqual(
+            {'Закупки', 'Остатки', 'Расходы', 'Проблемы', 'Выручка', 'Напоминания'},
+            {case['expected_projection'] for case in scenarios},
+        )
+        serialized = json.dumps(scenarios, ensure_ascii=False).lower()
+        without_dates = re.sub(r'\d{4}-\d{2}-\d{2}', '', serialized)
+        self.assertNotRegex(without_dates, r'\+?\d[\d\s()-]{8,}\d')
+        self.assertNotIn('@', serialized)
 
 
 if __name__ == '__main__':
