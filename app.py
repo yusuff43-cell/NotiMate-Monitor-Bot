@@ -484,7 +484,7 @@ def _rows_for_date(rows, date_prefix, amount_field):
 
 
 def refresh_overview(client_cfg):
-    """Refresh the small owner-facing Sheet overview after a confirmed projection."""
+    """Refresh the owner dashboard after a confirmed projection."""
     if not gc:
         raise RuntimeError('Google Sheets is not ready')
     tz = pytz.timezone('Asia/Bangkok')
@@ -505,6 +505,20 @@ def refresh_overview(client_cfg):
     expenses_today = _rows_for_date(expense_rows, today, 'Сумма (THB)')
     revenue_month = _rows_for_date(revenue_rows, month, 'Gross Sales')
     expenses_month = _rows_for_date(expense_rows, month, 'Сумма (THB)')
+    daily = {}
+    for offset in range(13, -1, -1):
+        day = (now - datetime.timedelta(days=offset)).strftime('%Y-%m-%d')
+        daily[day] = [
+            _rows_for_date(revenue_rows, day, 'Gross Sales'),
+            _rows_for_date(expense_rows, day, 'Сумма (THB)'),
+        ]
+    suppliers = {}
+    for row in expense_rows:
+        if not str(row.get('Дата', '')).startswith(month):
+            continue
+        supplier = str(row.get('Поставщик/Магазин', '')).strip() or 'Без поставщика'
+        suppliers[supplier] = suppliers.get(supplier, 0.0) + _money(row.get('Сумма (THB)'))
+    top_suppliers = sorted(suppliers.items(), key=lambda item: item[1], reverse=True)[:6] or [('Нет данных', 0)]
 
     critical = []
     try:
@@ -526,37 +540,54 @@ def refresh_overview(client_cfg):
     reminders = upcoming_reminders(sh, now, days_limit=14, limit=10)
 
     values = [
-        ['Обзор владельца', '', '', ''],
-        ['Обновлено (Bangkok)', now.strftime('%Y-%m-%d %H:%M'), '', ''],
+        ['NotiMate · Обзор владельца', '', '', '', '', '', '', ''],
+        ['Обновлено (Bangkok)', now.strftime('%Y-%m-%d %H:%M'), '', '', '', '', '', ''],
         [],
-        ['Финансы', 'Выручка (THB)', 'Расходы (THB)', 'Разница (THB)'],
-        ['Сегодня', revenue_today, expenses_today, revenue_today - expenses_today],
-        ['Текущий месяц', revenue_month, expenses_month, revenue_month - expenses_month],
+        ['Выручка сегодня', '', 'Расходы сегодня', '', 'Результат сегодня', '', 'Критичных позиций', ''],
+        [revenue_today, '', expenses_today, '', revenue_today - expenses_today, '', len(critical), ''],
+        ['Выручка за месяц', '', 'Расходы за месяц', '', 'Результат за месяц', '', 'Сроков ≤ 14 дней', ''],
+        [revenue_month, '', expenses_month, '', revenue_month - expenses_month, '', len(reminders), ''],
         [],
-        ['Критичные остатки', 'Статус', 'Холодильник', 'Морозилка'],
+        ['Критичные остатки', 'Статус', 'Холодильник', 'Морозилка', '', 'Ближайшие сроки', 'Дата', 'Дней'],
     ]
     if critical:
-        values.extend([[row.get('Продукт', ''), row.get('Примечание', ''), row.get('Холодильник', ''), row.get('Морозилка', '')] for row in critical])
+        critical_rows = [[row.get('Продукт', ''), row.get('Примечание', ''), row.get('Холодильник', ''), row.get('Морозилка', '')] for row in critical]
     else:
-        values.append(['Нет критичных остатков', '', '', ''])
-    values.extend([[], ['Ближайшие сроки', 'Дата', 'Осталось дней', '']])
+        critical_rows = [['Нет критичных остатков', '', '', '']]
     if reminders:
-        values.extend([[title, expiry, left, ''] for left, title, expiry in reminders])
+        reminder_rows = [[title, expiry, left] for left, title, expiry in reminders]
     else:
-        values.append(['Нет сроков в ближайшие 14 дней', '', '', ''])
+        reminder_rows = [['Нет сроков в ближайшие 14 дней', '', '']]
+    detail_rows = max(len(critical_rows), len(reminder_rows))
+    for index in range(detail_rows):
+        values.append(
+            (critical_rows[index] if index < len(critical_rows) else ['', '', '', ''])
+            + ['']
+            + (reminder_rows[index] if index < len(reminder_rows) else ['', '', ''])
+        )
+    trend_rows = [['Дата', 'Выручка (THB)', 'Расходы (THB)']] + [[day, revenue, expense] for day, (revenue, expense) in daily.items()]
+    supplier_rows = [['Поставщик', 'Расходы (THB)']] + [[supplier, amount] for supplier, amount in top_suppliers]
 
     try:
         ws = sh.worksheet('Обзор')
     except Exception:
-        ws = sh.add_worksheet(title='Обзор', rows=100, cols=4)
-    ws.batch_clear(['A1:D40'])
-    ws.update(values=values, range_name=f'A1:D{len(values)}', value_input_option='USER_ENTERED')
-    ws.format('A1:D1', {'backgroundColor': {'red': 0.18, 'green': 0.35, 'blue': 0.24}, 'textFormat': {'bold': True, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}})
-    ws.format('A4:D4', {'backgroundColor': {'red': 0.85, 'green': 0.92, 'blue': 0.86}, 'textFormat': {'bold': True}})
-    critical_header = 8
-    ws.format(f'A{critical_header}:D{critical_header}', {'backgroundColor': {'red': 0.96, 'green': 0.85, 'blue': 0.85}, 'textFormat': {'bold': True}})
-    reminder_header = 10 + len(critical)
-    ws.format(f'A{reminder_header}:D{reminder_header}', {'backgroundColor': {'red': 0.9, 'green': 0.88, 'blue': 0.75}, 'textFormat': {'bold': True}})
+        ws = sh.add_worksheet(title='Обзор', rows=100, cols=12)
+    if getattr(ws, 'col_count', 12) < 12:
+        ws.add_cols(12 - ws.col_count)
+    ws.batch_clear(['A1:L40'])
+    ws.update(values=values, range_name=f'A1:H{len(values)}', value_input_option='USER_ENTERED')
+    ws.update(values=trend_rows, range_name=f'J1:L{len(trend_rows)}', value_input_option='USER_ENTERED')
+    ws.update(values=supplier_rows, range_name=f'J20:K{19 + len(supplier_rows)}', value_input_option='USER_ENTERED')
+    dark_green = {'red': 0.13, 'green': 0.31, 'blue': 0.24}
+    ws.format('A1:H1', {'backgroundColor': dark_green, 'textFormat': {'bold': True, 'fontSize': 16, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}, 'verticalAlignment': 'MIDDLE'})
+    ws.format('A2:H2', {'textFormat': {'italic': True, 'foregroundColor': {'red': 0.35, 'green': 0.4, 'blue': 0.38}}})
+    ws.format('A4:H4', {'backgroundColor': {'red': 0.87, 'green': 0.93, 'blue': 0.89}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
+    ws.format('A5:H5', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    ws.format('A6:H6', {'backgroundColor': {'red': 0.92, 'green': 0.95, 'blue': 0.93}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
+    ws.format('A7:H7', {'textFormat': {'bold': True, 'fontSize': 14}, 'horizontalAlignment': 'CENTER', 'numberFormat': {'type': 'NUMBER', 'pattern': '#,##0 "THB"'}})
+    ws.format('A9:D9', {'backgroundColor': {'red': 0.97, 'green': 0.86, 'blue': 0.86}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
+    ws.format('F9:H9', {'backgroundColor': {'red': 0.95, 'green': 0.91, 'blue': 0.78}, 'textFormat': {'bold': True}, 'horizontalAlignment': 'CENTER'})
+    ws.format('J1:L40', {'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}})
     return {'critical': len(critical), 'reminders': len(reminders)}
 
 

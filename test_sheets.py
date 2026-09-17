@@ -59,7 +59,7 @@ class FakeWorksheet:
         self.rows = []
 
     def update(self, values, range_name=None, value_input_option=None):
-        self.rows = [list(row) for row in values]
+        self.rows.extend([list(row) for row in values])
 
     def format(self, range_name, style):
         self.formats.append((range_name, style))
@@ -140,7 +140,7 @@ class SheetsIdempotencyTests(unittest.TestCase):
             app_module.refresh_overview(self.cfg)
         rows = self.spreadsheet.worksheet('Обзор').rows
         flat = ' '.join(str(cell) for row in rows for cell in row)
-        self.assertIn('Финансы', flat)
+        self.assertIn('Выручка сегодня', flat)
         self.assertIn('Молоко', flat)
         self.assertIn('Лицензия', flat)
 
