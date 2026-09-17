@@ -513,15 +513,15 @@ def reminders_report(client_cfg):
         return
     try:
         now = datetime.datetime.now(pytz.timezone('Asia/Bangkok'))
-        reminders = upcoming_reminders(gc.open_by_key(client_cfg['sheet_id']), now, days_limit=60, limit=12)
+        reminders = upcoming_reminders(gc.open_by_key(client_cfg['sheet_id']), now, days_limit=7, limit=12)
         if reminders:
-            lines = ['🔔 Напоминания на ближайшие 60 дней:']
+            lines = ['🔔 Напоминания на ближайшие 7 дней:']
             for left, title, expiry in reminders:
                 when = 'сегодня' if left == 0 else f'через {left} дн.'
                 lines.append(f"• {title} — {when} ({expiry})")
             msg = '\n'.join(lines)
         else:
-            msg = '🔔 На ближайшие 60 дней напоминаний нет.'
+            msg = '🔔 На ближайшие 7 дней напоминаний нет.'
         notify_owner(client_cfg, msg, with_actions=True)
     except Exception as e:
         print(f"Reminders report error: {e}")
