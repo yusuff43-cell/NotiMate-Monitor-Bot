@@ -109,13 +109,59 @@ def ask_openai(instructions, input_data, max_output_tokens):
             raise
 
 # ── Google Sheets helpers ────────────────────────────────────────
+EVENT_ID_HEADER = 'NotiMate Event ID'
+
+
 def get_or_create_sheet(sh, name, headers):
     try:
-        return sh.worksheet(name)
+        ws = sh.worksheet(name)
     except:
-        ws = sh.add_worksheet(title=name, rows=1000, cols=len(headers))
-        ws.append_row(headers)
-        return ws
+        ws = sh.add_worksheet(title=name, rows=1000, cols=len(headers) + 1)
+        ws.append_row(headers + [EVENT_ID_HEADER])
+    ensure_event_id_column(ws)
+    return ws
+
+
+def ensure_event_id_column(ws):
+    """Return the one-based technical event-ID column, adding it if necessary.
+
+    The ID is deliberately stored in the spreadsheet: a worker can be killed after
+    Google accepted an append but before it acknowledges the event in Postgres.
+    On retry, this durable marker makes the projection safe to repeat.
+    """
+    headers = ws.row_values(1)
+    if EVENT_ID_HEADER not in headers:
+        column = len(headers) + 1
+        ws.update_cell(1, column, EVENT_ID_HEADER)
+        return column
+    return headers.index(EVENT_ID_HEADER) + 1
+
+
+def append_rows_once(ws, rows, event_id, effect):
+    """Append the rows not yet projected for one LINE event and verify the write."""
+    if not event_id:
+        raise ValueError('Cannot write to Google Sheets without webhookEventId')
+    if not rows:
+        return 0
+    event_column = ensure_event_id_column(ws)
+    keys = [f'{event_id}:{effect}:{index}' for index in range(len(rows))]
+    existing_keys = set(ws.col_values(event_column)[1:])
+    missing = []
+    for row, key in zip(rows, keys):
+        if key in existing_keys:
+            continue
+        padded = list(row[:event_column - 1])
+        padded.extend([''] * (event_column - 1 - len(padded)))
+        padded.append(key)
+        missing.append(padded)
+    if not missing:
+        return 0
+    ws.append_rows(missing, value_input_option='USER_ENTERED')
+    written_keys = set(ws.col_values(event_column)[1:])
+    expected = {key for key in keys if key not in existing_keys}
+    if not expected.issubset(written_keys):
+        raise RuntimeError('Google Sheets did not confirm all appended event rows')
+    return len(missing)
 
 def get_last_date(ws):
     try:
@@ -127,82 +173,84 @@ def get_last_date(ws):
         pass
     return None
 
-def save_остатки(sheet_id, items, date_str):
-    if not gc: return
+def save_остатки(sheet_id, items, date_str, event_id):
+    if not gc:
+        raise RuntimeError('Google Sheets is not ready')
     sh = gc.open_by_key(sheet_id)
     headers = ['Дата', 'Категория', 'Продукт', 'Холодильник', 'Морозилка', 'Примечание']
     ws = get_or_create_sheet(sh, 'Остатки', headers)
     last_date = get_last_date(ws)
     last_category = None
+    rows = []
     for i, item in enumerate(items):
         date_cell = date_str if (i == 0 and last_date != date_str) else ''
         category = item.get('category', '')
         category_cell = category if category != last_category else ''
         if category:
             last_category = category
-        ws.append_row([date_cell, category_cell, item.get('product',''), item.get('fridge',''), item.get('freezer',''), item.get('note','')])
+        rows.append([date_cell, category_cell, item.get('product',''), item.get('fridge',''), item.get('freezer',''), item.get('note','')])
+    return append_rows_once(ws, rows, event_id, 'stock')
 
-def save_закупки(sheet_id, items, date_str):
-    if not gc: return
+def save_закупки(sheet_id, items, date_str, event_id):
+    if not gc:
+        raise RuntimeError('Google Sheets is not ready')
     sh = gc.open_by_key(sheet_id)
     headers = ['Дата', 'Продукт', 'Количество']
     ws = get_or_create_sheet(sh, 'Закупки', headers)
     last_date = get_last_date(ws)
-    # Получаем уже записанные сегодня продукты
-    existing = ws.get_all_records()
-    # Дата пишется только в первую строку, остальные пустые - берём все записи начиная с последней даты
-    last_date_in_sheet = get_last_date(ws)
-    today_names = []
-    if last_date_in_sheet and last_date_in_sheet.startswith(date_str):
-        # Берём только записи последней группы (после последней даты)
-        last_idx = 0
-        for idx, r in enumerate(existing):
-            if str(r.get('Дата','')).startswith(date_str):
-                last_idx = idx
-                break
-        today_names = [r.get('Продукт','').lower().strip() for r in existing[last_idx:] if r.get('Продукт','')]
-    incoming_names = [i.get('product','').lower().strip() for i in items]
-    # Если входящий список совпадает с сегодняшним на 60%+ — это обновление
-    if today_names and incoming_names:
-        matches = sum(1 for n in incoming_names if any(n[:4] in t or t[:4] in n for t in today_names if len(t) > 3))
-        overlap = matches / len(incoming_names)
-        if overlap >= 0.6:
-            # Добавляем только действительно новые позиции
-            new_items = [i for i in items if not any(i.get('product','').lower().strip()[:4] in t or t[:4] in i.get('product','').lower().strip() for t in today_names if len(t) > 3)]
-        else:
-            new_items = items
-    else:
-        new_items = items
-
-    if not new_items:
-        print('No new items, skipping')
-        return
-    for i, item in enumerate(new_items):
+    rows = []
+    for i, item in enumerate(items):
         date_cell = date_str if (i == 0 and last_date != date_str) else ''
-        ws.append_row([date_cell, item.get('product',''), item.get('quantity','')])
+        rows.append([date_cell, item.get('product',''), item.get('quantity','')])
+    return append_rows_once(ws, rows, event_id, 'purchase')
 
-def save_расходы(sheet_id, items, date_str, supplier, note=''):
-    if not gc: return
+def save_расходы(sheet_id, items, date_str, supplier, note='', event_id=None, effect='expense'):
+    if not gc:
+        raise RuntimeError('Google Sheets is not ready')
     sh = gc.open_by_key(sheet_id)
     headers = ['Дата', 'Тип', 'Поставщик/Магазин', 'Позиция', 'Сумма (THB)', 'Примечание']
     ws = get_or_create_sheet(sh, 'Расходы', headers)
+    rows = []
     for item in items:
         clean_amount = str(item.get('amount','') or '').replace('฿','').replace('B','').replace(',','').strip()
-        ws.append_row([date_str, item.get('type','Закупка'), supplier, item.get('description',''), clean_amount, note])
+        rows.append([date_str, item.get('type','Закупка'), item.get('supplier', supplier), item.get('description',''), clean_amount, item.get('note', note)])
+    return append_rows_once(ws, rows, event_id, effect)
 
-def save_выручка(sheet_id, data, date_str, note=''):
-    if not gc: return
+def save_выручка(sheet_id, data, date_str, note='', event_id=None):
+    if not gc:
+        raise RuntimeError('Google Sheets is not ready')
     sh = gc.open_by_key(sheet_id)
     headers = ['Дата', 'Смена', 'Gross Sales', 'Наличные', 'Карта', 'QR', 'Примечание']
     ws = get_or_create_sheet(sh, 'Выручка', headers)
-    ws.append_row([date_str, data.get('shift',''), data.get('gross_sales',''), data.get('cash',''), data.get('card',''), data.get('qr',''), note])
+    return append_rows_once(ws, [[date_str, data.get('shift',''), data.get('gross_sales',''), data.get('cash',''), data.get('card',''), data.get('qr',''), note]], event_id, 'shift')
 
-def save_проблемы(sheet_id, text, result, date_str):
-    if not gc: return
+def save_проблемы(sheet_id, text, result, date_str, event_id):
+    if not gc:
+        raise RuntimeError('Google Sheets is not ready')
     sh = gc.open_by_key(sheet_id)
     headers = ['Дата', 'Сообщение', 'Перевод и совет']
     ws = get_or_create_sheet(sh, 'Проблемы', headers)
-    ws.append_row([date_str, text, result])
+    return append_rows_once(ws, [[date_str, text, result]], event_id, 'problem')
+
+
+def save_одиночный_остаток(sheet_id, product, amount, date_str, event_id):
+    sh = gc.open_by_key(sheet_id)
+    ws = get_or_create_sheet(sh, 'Остатки', ['Дата','Категория','Продукт','Холодильник','Морозилка','Примечание'])
+    return append_rows_once(ws, [[date_str, '', product, amount, '', '']], event_id, 'single-stock')
+
+
+def save_зарплаты(sheet_id, items, date_str, event_id):
+    sh = gc.open_by_key(sheet_id)
+    ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
+    rows = [[date_str, item.get('recipient',''), item.get('amount',''), item.get('note','')] for item in items]
+    return append_rows_once(ws, rows, event_id, 'salary')
+
+
+def save_напоминание(sheet_id, data, date_str, event_id):
+    sh = gc.open_by_key(sheet_id)
+    ws = get_or_create_sheet(sh, 'Напоминания', ['Название', 'Дата окончания', 'Дата добавления', 'Примечание'])
+    row = [data.get('title',''), data.get('expiry_date',''), date_str, data.get('note','')]
+    return append_rows_once(ws, [row], event_id, 'reminder')
 
 def notify_owner(client_cfg, msg):
     try:
@@ -221,7 +269,7 @@ def notify_owner(client_cfg, msg):
         return False
 
 # ── Анализ фото ──────────────────────────────────────────────────
-def check_price_drift(sheet_id, items, supplier, client_cfg):
+def check_price_drift(sheet_id, items, supplier, client_cfg, event_id):
     """Проверяет дрейф цен и уведомляет если цена выросла >10%"""
     if not gc:
         return
@@ -231,6 +279,7 @@ def check_price_drift(sheet_id, items, supplier, client_cfg):
         ws = get_or_create_sheet(sh, 'Цены', headers)
         rows = ws.get_all_records()
         alerts = []
+        price_rows = []
         date_today = bangkok_date()
         for item in items:
             name = item.get('description', '').strip()
@@ -249,14 +298,14 @@ def check_price_drift(sheet_id, items, supplier, client_cfg):
                     except:
                         prev_price = None
                     break
-            # Записываем новую цену
-            ws.append_row([date_today, supplier, name, price])
+            price_rows.append([date_today, supplier, name, price])
             # Проверяем дрейф
             if prev_price and prev_price > 0 and price > 0:
                 drift = (price - prev_price) / prev_price * 100
                 if drift >= 10:
                     alerts.append(f"- {name}: {prev_price:.0f} → {price:.0f} THB (+{drift:.0f}%)")
-        if alerts:
+        created = append_rows_once(ws, price_rows, event_id, 'price')
+        if alerts and created:
             msg = f"⚠️ ДРЕЙФ ЦЕН от {supplier}:\n"
             msg += "\n".join(alerts)
             msg += "\n\n💡 Проверьте накладную — поставщик поднял цены."
@@ -430,6 +479,87 @@ def _money(value):
         return 0.0
 
 
+def _rows_for_date(rows, date_prefix, amount_field):
+    return sum(_money(row.get(amount_field)) for row in rows if str(row.get('Дата', '')).startswith(date_prefix))
+
+
+def refresh_overview(client_cfg):
+    """Refresh the small owner-facing Sheet overview after a confirmed projection."""
+    if not gc:
+        raise RuntimeError('Google Sheets is not ready')
+    tz = pytz.timezone('Asia/Bangkok')
+    now = datetime.datetime.now(tz)
+    today = now.strftime('%Y-%m-%d')
+    month = now.strftime('%Y-%m')
+    sh = gc.open_by_key(client_cfg['sheet_id'])
+
+    try:
+        revenue_rows = sh.worksheet('Выручка').get_all_records()
+    except Exception:
+        revenue_rows = []
+    try:
+        expense_rows = sh.worksheet('Расходы').get_all_records()
+    except Exception:
+        expense_rows = []
+    revenue_today = _rows_for_date(revenue_rows, today, 'Gross Sales')
+    expenses_today = _rows_for_date(expense_rows, today, 'Сумма (THB)')
+    revenue_month = _rows_for_date(revenue_rows, month, 'Gross Sales')
+    expenses_month = _rows_for_date(expense_rows, month, 'Сумма (THB)')
+
+    critical = []
+    try:
+        stock_rows = sh.worksheet('Остатки').get_all_records()
+        current_date = ''
+        dated_rows = []
+        for row in stock_rows:
+            if str(row.get('Дата', '')).strip():
+                current_date = str(row.get('Дата', '')).strip()
+            if row.get('Продукт'):
+                dated_rows.append((current_date, row))
+        latest_date = max((date for date, _ in dated_rows if date), default='')
+        critical = [
+            row for date, row in dated_rows
+            if date == latest_date and row.get('Примечание') in ('Out of stock', 'Low stock', 'Exp today')
+        ][:10]
+    except Exception:
+        pass
+    reminders = upcoming_reminders(sh, now, days_limit=14, limit=10)
+
+    values = [
+        ['Обзор владельца', '', '', ''],
+        ['Обновлено (Bangkok)', now.strftime('%Y-%m-%d %H:%M'), '', ''],
+        [],
+        ['Финансы', 'Выручка (THB)', 'Расходы (THB)', 'Разница (THB)'],
+        ['Сегодня', revenue_today, expenses_today, revenue_today - expenses_today],
+        ['Текущий месяц', revenue_month, expenses_month, revenue_month - expenses_month],
+        [],
+        ['Критичные остатки', 'Статус', 'Холодильник', 'Морозилка'],
+    ]
+    if critical:
+        values.extend([[row.get('Продукт', ''), row.get('Примечание', ''), row.get('Холодильник', ''), row.get('Морозилка', '')] for row in critical])
+    else:
+        values.append(['Нет критичных остатков', '', '', ''])
+    values.extend([[], ['Ближайшие сроки', 'Дата', 'Осталось дней', '']])
+    if reminders:
+        values.extend([[title, expiry, left, ''] for left, title, expiry in reminders])
+    else:
+        values.append(['Нет сроков в ближайшие 14 дней', '', '', ''])
+
+    try:
+        ws = sh.worksheet('Обзор')
+    except Exception:
+        ws = sh.add_worksheet(title='Обзор', rows=100, cols=4)
+    ws.batch_clear(['A1:D40'])
+    ws.update(values=values, range_name=f'A1:D{len(values)}', value_input_option='USER_ENTERED')
+    ws.format('A1:D1', {'backgroundColor': {'red': 0.18, 'green': 0.35, 'blue': 0.24}, 'textFormat': {'bold': True, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}}})
+    ws.format('A4:D4', {'backgroundColor': {'red': 0.85, 'green': 0.92, 'blue': 0.86}, 'textFormat': {'bold': True}})
+    critical_header = 8
+    ws.format(f'A{critical_header}:D{critical_header}', {'backgroundColor': {'red': 0.96, 'green': 0.85, 'blue': 0.85}, 'textFormat': {'bold': True}})
+    reminder_header = 10 + len(critical)
+    ws.format(f'A{reminder_header}:D{reminder_header}', {'backgroundColor': {'red': 0.9, 'green': 0.88, 'blue': 0.75}, 'textFormat': {'bold': True}})
+    return {'critical': len(critical), 'reminders': len(reminders)}
+
+
 def upcoming_reminders(sh, now, days_limit=14, limit=5):
     try:
         rows = sh.worksheet('Напоминания').get_all_records()
@@ -588,6 +718,7 @@ def process_line_event(destination, event):
         return
     msg = event.get('message', {})
     msg_type = msg.get('type')
+    event_id = event.get('webhookEventId')
     current_bangkok = bangkok_now()
     date_only = current_bangkok.strftime("%Y-%m-%d")
     now_str = current_bangkok.strftime("%Y-%m-%d %H:%M")
@@ -600,7 +731,8 @@ def process_line_event(destination, event):
         if result == 'IGNORE' or not result:
             return
         if result.startswith('ВАЖНО [ПРОБЛЕМА]'):
-            save_проблемы(client_cfg['sheet_id'], text, result, now_str)
+            save_проблемы(client_cfg['sheet_id'], text, result, now_str, event_id)
+            refresh_overview(client_cfg)
             notify_owner(client_cfg, result)
             return
         try:
@@ -609,13 +741,15 @@ def process_line_event(destination, event):
                 return
             data = json.loads(json_match.group())
             if data['type'] == 'purchase':
-                save_закупки(client_cfg['sheet_id'], data['items'], date_only)
+                save_закупки(client_cfg['sheet_id'], data['items'], date_only, event_id)
+                refresh_overview(client_cfg)
                 msg_text = "🛒 ЗАКУПКА записана:\n"
                 for item in data['items']:
                     msg_text += f"- {item['product']}: {item['quantity']}\n"
                 # уведомление в дайджесте 18:00
             elif data['type'] == 'stock':
-                save_остатки(client_cfg['sheet_id'], data['items'], date_only)
+                save_остатки(client_cfg['sheet_id'], data['items'], date_only, event_id)
+                refresh_overview(client_cfg)
                 out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
                 low = [i for i in data['items'] if i.get('note') == 'Low stock']
                 msg_text = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
@@ -627,21 +761,16 @@ def process_line_event(destination, event):
                     for i in low: msg_text += f"- {i['product']}\n"
                 notify_owner(client_cfg, msg_text)
             elif data['type'] == 'single_stock':
-                if gc:
-                    sh = gc.open_by_key(client_cfg['sheet_id'])
-                    ws = get_or_create_sheet(sh, 'Остатки', ['Дата','Категория','Продукт','Холодильник','Морозилка','Примечание'])
-                    ws.append_row([date_only, '', data.get('product',''), data.get('amount',''), '', ''])
+                save_одиночный_остаток(client_cfg['sheet_id'], data.get('product',''), data.get('amount',''), date_only, event_id)
+                refresh_overview(client_cfg)
                 notify_owner(client_cfg, f"📦 Остаток записан:\n{data.get('product','')}: {data.get('amount','')}")
             elif data['type'] == 'text_expense':
                 items = data.get('items', [])
                 total = data.get('total', '')
                 supplier = data.get('supplier', '')
                 positions = ', '.join([i['description'] for i in items if i.get('description')])
-                if gc:
-                    sh = gc.open_by_key(client_cfg['sheet_id'])
-                    ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
-                    clean_total = str(total or '').replace('฿','').replace('B','').replace(',','').strip()
-                    ws.append_row([date_only, 'Закупка', supplier, positions, clean_total, ''])
+                save_расходы(client_cfg['sheet_id'], [{'type': 'Закупка', 'description': positions, 'amount': total}], date_only, supplier, event_id=event_id, effect='text-expense')
+                refresh_overview(client_cfg)
                 notify_owner(client_cfg, f"💸 РАСХОД записан:\nМагазин: {supplier}\nПозиции: {positions}\nИтого: {total} THB")
         except Exception as e:
             raise RuntimeError(f"Text handler error: {e}") from e
@@ -662,7 +791,8 @@ def process_line_event(destination, event):
             data = json.loads(json_match.group())
             doc_type = data.get('doc_type')
             if doc_type == 'shift':
-                save_выручка(client_cfg['sheet_id'], data, date_only, data.get('note',''))
+                save_выручка(client_cfg['sheet_id'], data, date_only, data.get('note',''), event_id)
+                refresh_overview(client_cfg)
                 diff = data.get('difference', 0)
                 msg_text = f"💰 Смена #{data.get('shift','?')}\n"
                 msg_text += f"📊 Выручка: {data.get('gross_sales','')} THB\n"
@@ -672,23 +802,21 @@ def process_line_event(destination, event):
                 msg_text += f"✅ Касса: {'+' if float(diff or 0) >= 0 else ''}{diff} THB"
                 notify_owner(client_cfg, msg_text)
             elif doc_type == 'invoice':
-                save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
-                check_price_drift(client_cfg['sheet_id'], data.get('items',[]), data.get('supplier',''), client_cfg)
+                save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''), event_id, 'invoice-expense')
+                check_price_drift(client_cfg['sheet_id'], data.get('items',[]), data.get('supplier',''), client_cfg, event_id)
+                refresh_overview(client_cfg)
                 notify_owner(client_cfg, f"🧾 НАКЛАДНАЯ записана\nПоставщик: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
             elif doc_type == 'expense':
-                save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''))
+                save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''), event_id, 'receipt-expense')
+                refresh_overview(client_cfg)
                 notify_owner(client_cfg, f"🛒 РАСХОД записан\nМагазин: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
             elif doc_type == 'salary':
-                if gc:
-                    sh = gc.open_by_key(client_cfg['sheet_id'])
-                    ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
-                    ws.append_row([date_only, data.get('recipient',''), data.get('amount',''), data.get('note','')])
+                save_зарплаты(client_cfg['sheet_id'], [data], date_only, event_id)
+                refresh_overview(client_cfg)
                 notify_owner(client_cfg, f"💼 ЗАРПЛАТА записана\nПолучатель: {data.get('recipient','—')}\nСумма: {data.get('amount','—')} THB")
             elif doc_type == 'reminder':
-                if gc:
-                    sh = gc.open_by_key(client_cfg['sheet_id'])
-                    ws = get_or_create_sheet(sh, 'Напоминания', ['Название', 'Дата окончания', 'Дата добавления', 'Примечание'])
-                    ws.append_row([data.get('title',''), data.get('expiry_date',''), date_only, data.get('note','')])
+                save_напоминание(client_cfg['sheet_id'], data, date_only, event_id)
+                refresh_overview(client_cfg)
                 notify_owner(client_cfg, f"📅 НАПОМИНАНИЕ записано\n📄 {data.get('title','—')}\n⏰ Истекает: {data.get('expiry_date','—')}")
             elif doc_type == 'notice':
                 notify_owner(client_cfg, f"⚡️ ВАЖНОЕ УВЕДОМЛЕНИЕ\n\n{data.get('title','')}\n\n{data.get('content','')}")
@@ -696,16 +824,13 @@ def process_line_event(destination, event):
                 items = data.get('items', [])
                 expenses = [i for i in items if i.get('type') == 'expense']
                 salaries = [i for i in items if i.get('type') == 'salary']
-                if gc and expenses:
-                    sh = gc.open_by_key(client_cfg['sheet_id'])
-                    ws = get_or_create_sheet(sh, 'Расходы', ['Дата','Тип','Поставщик/Магазин','Позиция','Сумма (THB)','Примечание'])
-                    for item in expenses:
-                        ws.append_row([date_only, 'Закупка', item.get('recipient',''), '', item.get('amount',''), item.get('note','')])
-                if gc and salaries:
-                    sh = gc.open_by_key(client_cfg['sheet_id'])
-                    ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
-                    for item in salaries:
-                        ws.append_row([date_only, item.get('recipient',''), item.get('amount',''), item.get('note','')])
+                if expenses:
+                    expense_rows = [{'type': 'Закупка', 'supplier': item.get('recipient',''), 'description': '', 'amount': item.get('amount',''), 'note': item.get('note','')} for item in expenses]
+                    save_расходы(client_cfg['sheet_id'], expense_rows, date_only, '', event_id=event_id, effect='bank-expense')
+                if salaries:
+                    save_зарплаты(client_cfg['sheet_id'], salaries, date_only, event_id)
+                if expenses or salaries:
+                    refresh_overview(client_cfg)
                 msg = f"🏦 ТРАНЗАКЦИИ записаны ({len(items)} шт)\n"
                 if expenses:
                     msg += f"💸 Расходы: {len(expenses)} шт\n"
