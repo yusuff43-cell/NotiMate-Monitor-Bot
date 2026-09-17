@@ -1,0 +1,67 @@
+name: notimate-monitor
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app: &app
+  build:
+    context: .
+  image: notimate-monitor-app:local
+  env_file:
+    - .env
+  restart: unless-stopped
+  init: true
+  logging: *default-logging
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-notimate_monitor}
+      POSTGRES_USER: ${POSTGRES_USER:-notimate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 256m
+    cpus: 0.25
+    logging: *default-logging
+
+  web:
+    <<: *app
+    command: ["gunicorn", "app:app", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "30", "--access-logfile", "-", "--error-logfile", "-"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-notimate}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-notimate_monitor}
+      PORT: "8080"
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8084}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    mem_limit: 384m
+    cpus: 0.30
+
+  worker:
+    <<: *app
+    command: ["python", "worker.py"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-notimate}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-notimate_monitor}
+      DISABLE_SCHEDULER: "1"
+    mem_limit: 384m
+    cpus: 0.40
+
+volumes:
+  postgres_data:

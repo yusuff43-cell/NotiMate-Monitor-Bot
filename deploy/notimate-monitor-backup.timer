@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily NotiMate Monitor PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Bangkok
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

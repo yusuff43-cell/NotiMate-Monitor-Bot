@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+!.env.example
+clients.json
+secrets/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+backups/
