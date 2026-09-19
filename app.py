@@ -85,6 +85,16 @@ def find_client(destination: str):
     return CLIENTS.get(destination)
 
 
+def openai_usage_values(response):
+    """Read token counters defensively across compatible Responses SDK versions."""
+    usage = getattr(response, 'usage', None)
+    input_tokens = int(getattr(usage, 'input_tokens', 0) or 0)
+    output_tokens = int(getattr(usage, 'output_tokens', 0) or 0)
+    output_details = getattr(usage, 'output_tokens_details', None)
+    reasoning_tokens = int(getattr(output_details, 'reasoning_tokens', 0) or 0)
+    return input_tokens, output_tokens, reasoning_tokens
+
+
 def ask_openai(instructions, input_data, max_output_tokens):
     """Call OpenAI with bounded retries and no response storage."""
     for attempt in range(3):
@@ -101,6 +111,24 @@ def ask_openai(instructions, input_data, max_output_tokens):
             result = (response.output_text or '').strip()
             if not result:
                 raise RuntimeError('OpenAI returned an empty response')
+            input_tokens, output_tokens, reasoning_tokens = openai_usage_values(response)
+            logger.info(
+                'openai_request_completed',
+                extra={
+                    'model': OPENAI_MODEL,
+                    'input_tokens': input_tokens,
+                    'output_tokens': output_tokens,
+                    'reasoning_tokens': reasoning_tokens,
+                },
+            )
+            if event_store and DB_ENABLED:
+                try:
+                    event_store.record_openai_usage(
+                        OPENAI_MODEL, input_tokens, output_tokens, reasoning_tokens
+                    )
+                except Exception as exc:
+                    # Usage accounting must never prevent the owner from receiving a result.
+                    logger.warning('openai_usage_recording_failed', extra={'error_type': type(exc).__name__})
             return result
         except (RateLimitError, APIStatusError) as exc:
             status_code = getattr(exc, 'status_code', None)

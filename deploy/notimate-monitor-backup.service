@@ -7,4 +7,4 @@ Requires=docker.service
 Type=oneshot
 User=hermes
 WorkingDirectory=/home/hermes/apps/notimate-monitor
-ExecStart=/home/hermes/apps/notimate-monitor/deploy/backup-postgres.sh
+ExecStart=/home/hermes/apps/notimate-monitor/current/deploy/backup-postgres.sh

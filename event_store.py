@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS line_events (
 );
 CREATE INDEX IF NOT EXISTS line_events_claim_idx
     ON line_events (status, next_attempt_at, created_at);
+
+CREATE TABLE IF NOT EXISTS openai_usage_daily (
+    usage_date DATE NOT NULL,
+    model TEXT NOT NULL,
+    requests INTEGER NOT NULL DEFAULT 0,
+    input_tokens BIGINT NOT NULL DEFAULT 0,
+    output_tokens BIGINT NOT NULL DEFAULT 0,
+    reasoning_tokens BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (usage_date, model)
+);
 """
 
 
@@ -157,3 +168,60 @@ class PostgresEventStore:
                 """,
                 (error[:2000], event_id),
             )
+
+    def record_openai_usage(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        reasoning_tokens: int,
+    ) -> None:
+        """Store only daily aggregate API usage, never prompts or response content."""
+        with _driver()[0].connect(self.database_url) as conn:
+            conn.execute(
+                """
+                INSERT INTO openai_usage_daily (
+                    usage_date, model, requests, input_tokens, output_tokens, reasoning_tokens
+                )
+                VALUES (
+                    (NOW() AT TIME ZONE 'Asia/Bangkok')::date, %s, 1, %s, %s, %s
+                )
+                ON CONFLICT (usage_date, model) DO UPDATE
+                SET requests = openai_usage_daily.requests + 1,
+                    input_tokens = openai_usage_daily.input_tokens + EXCLUDED.input_tokens,
+                    output_tokens = openai_usage_daily.output_tokens + EXCLUDED.output_tokens,
+                    reasoning_tokens = openai_usage_daily.reasoning_tokens + EXCLUDED.reasoning_tokens,
+                    updated_at = NOW()
+                """,
+                (model, max(0, input_tokens), max(0, output_tokens), max(0, reasoning_tokens)),
+            )
+
+    def purge_expired_event_data(self, raw_payload_days: int, event_ledger_days: int) -> tuple[int, int]:
+        """Minimise retained webhook data while preserving short-lived idempotency metadata.
+
+        Terminal events first lose their source payload and diagnostic text.  Their
+        content-free event IDs are retained longer solely to prevent duplicate LINE
+        deliveries, then removed as well.
+        """
+        if raw_payload_days < 1 or event_ledger_days <= raw_payload_days:
+            raise ValueError('event retention must be greater than raw payload retention')
+        with _driver()[0].connect(self.database_url) as conn:
+            wiped = conn.execute(
+                """
+                UPDATE line_events
+                SET payload = '{}'::jsonb, last_error = NULL, updated_at = NOW()
+                WHERE status IN ('completed', 'failed')
+                  AND COALESCE(completed_at, updated_at) < NOW() - (%s * INTERVAL '1 day')
+                  AND (payload <> '{}'::jsonb OR last_error IS NOT NULL)
+                """,
+                (raw_payload_days,),
+            ).rowcount
+            deleted = conn.execute(
+                """
+                DELETE FROM line_events
+                WHERE status IN ('completed', 'failed')
+                  AND COALESCE(completed_at, updated_at) < NOW() - (%s * INTERVAL '1 day')
+                """,
+                (event_ledger_days,),
+            ).rowcount
+        return wiped, deleted

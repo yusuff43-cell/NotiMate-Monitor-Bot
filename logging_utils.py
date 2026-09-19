@@ -11,7 +11,11 @@ import os
 class JsonFormatter(logging.Formatter):
     """Emit operational metadata, never arbitrary exception messages or payloads."""
 
-    safe_fields = ('event_id', 'attempt', 'accepted', 'duplicates', 'document_type', 'error_type')
+    safe_fields = (
+        'event_id', 'attempt', 'accepted', 'duplicates', 'document_type', 'error_type',
+        'model', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'payloads_purged',
+        'events_deleted',
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {

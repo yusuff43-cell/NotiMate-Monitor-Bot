@@ -9,6 +9,9 @@ from logging_utils import get_logger
 
 MAX_ATTEMPTS = int(os.environ.get('WORKER_MAX_ATTEMPTS', '5'))
 POLL_SECONDS = float(os.environ.get('WORKER_POLL_SECONDS', '1'))
+RAW_EVENT_RETENTION_DAYS = int(os.environ.get('RAW_EVENT_RETENTION_DAYS', '14'))
+EVENT_LEDGER_RETENTION_DAYS = int(os.environ.get('EVENT_LEDGER_RETENTION_DAYS', '90'))
+RETENTION_CLEANUP_SECONDS = float(os.environ.get('RETENTION_CLEANUP_SECONDS', '86400'))
 logger = get_logger()
 
 
@@ -41,7 +44,21 @@ def main() -> None:
     from app import process_line_event
 
     logger.info('worker_started')
+    next_retention_cleanup = 0.0
     while True:
+        now = time.monotonic()
+        if now >= next_retention_cleanup:
+            try:
+                wiped, deleted = store.purge_expired_event_data(
+                    RAW_EVENT_RETENTION_DAYS, EVENT_LEDGER_RETENTION_DAYS
+                )
+                logger.info(
+                    'retention_cleanup_completed',
+                    extra={'payloads_purged': wiped, 'events_deleted': deleted},
+                )
+            except Exception as exc:
+                logger.warning('retention_cleanup_failed', extra={'error_type': type(exc).__name__})
+            next_retention_cleanup = now + RETENTION_CLEANUP_SECONDS
         if not run_once(store, process_line_event):
             time.sleep(POLL_SECONDS)
 

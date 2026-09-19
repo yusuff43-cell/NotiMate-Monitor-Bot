@@ -92,6 +92,31 @@ class WebhookTests(unittest.TestCase):
         request = api.push_message.call_args.args[0]
         self.assertIsNone(request.messages[0].quick_reply)
 
+    def test_openai_usage_is_aggregated_without_recording_content(self):
+        response = Mock()
+        response.output_text = 'Готово'
+        response.usage.input_tokens = 123
+        response.usage.output_tokens = 45
+        response.usage.output_tokens_details.reasoning_tokens = 0
+        client = Mock()
+        client.responses.create.return_value = response
+        app_module.openai_client = client
+
+        self.assertEqual(app_module.ask_openai('private instruction', 'private input', 100), 'Готово')
+        self.store.record_openai_usage.assert_called_once_with(app_module.OPENAI_MODEL, 123, 45, 0)
+
+    def test_openai_usage_accounting_failure_does_not_hide_result(self):
+        response = Mock()
+        response.output_text = 'Готово'
+        response.usage.input_tokens = 1
+        response.usage.output_tokens = 2
+        response.usage.output_tokens_details.reasoning_tokens = 0
+        app_module.openai_client = Mock()
+        app_module.openai_client.responses.create.return_value = response
+        self.store.record_openai_usage.side_effect = RuntimeError('database unavailable')
+
+        self.assertEqual(app_module.ask_openai('secret', 'message', 100), 'Готово')
+
 
 if __name__ == '__main__':
     unittest.main()
