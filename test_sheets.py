@@ -31,6 +31,10 @@ class FakeWorksheet:
     def __init__(self, headers=None):
         self.rows = [list(headers)] if headers else []
         self.formats = []
+        self.col_count = len(headers or [])
+
+    def add_cols(self, columns):
+        self.col_count += columns
 
     def row_values(self, row):
         return list(self.rows[row - 1]) if len(self.rows) >= row else []
@@ -131,6 +135,13 @@ class SheetsIdempotencyTests(unittest.TestCase):
     def test_missing_event_id_refuses_to_write(self):
         with self.assertRaisesRegex(ValueError, 'webhookEventId'):
             app_module.save_проблемы('test-sheet', 'Тест', 'Совет', '2026-09-17', None)
+
+    def test_existing_exact_width_sheet_grows_for_event_id(self):
+        ws = FakeWorksheet(['Дата', 'Продукт', 'Количество'])
+        self.spreadsheet.sheets['Закупки'] = ws
+        app_module.save_закупки('test-sheet', [{'product': 'Лёд', 'quantity': '1'}], '2026-09-17', 'evt-grid')
+        self.assertEqual(ws.col_count, 4)
+        self.assertEqual(ws.rows[0][-1], app_module.EVENT_ID_HEADER)
 
     def test_overview_contains_finances_critical_stock_and_deadlines(self):
         revenue = FakeWorksheet(['Дата', 'Gross Sales'])

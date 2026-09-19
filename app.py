@@ -162,6 +162,12 @@ def ensure_event_id_column(ws):
     headers = ws.row_values(1)
     if EVENT_ID_HEADER not in headers:
         column = len(headers) + 1
+        # Existing client sheets may have an exact-width grid.  Extending the
+        # grid before writing the technical column keeps idempotency compatible
+        # with those sheets instead of failing with Google API 400 grid limits.
+        current_columns = getattr(ws, 'col_count', None)
+        if current_columns is not None and current_columns < column:
+            ws.add_cols(column - current_columns)
         ws.update_cell(1, column, EVENT_ID_HEADER)
         return column
     return headers.index(EVENT_ID_HEADER) + 1
