@@ -754,6 +754,15 @@ def refresh_overview(client_cfg):
     return {'critical': len(critical), 'reminders': len(reminders)}
 
 
+def refresh_overview_safely(client_cfg):
+    """Keep dashboard refresh useful but never let it block a confirmed operation."""
+    try:
+        return refresh_overview(client_cfg)
+    except Exception as exc:
+        logger.warning('overview_refresh_failed', extra={'error_type': type(exc).__name__})
+        return None
+
+
 def upcoming_reminders(sh, now, days_limit=14, limit=5):
     try:
         rows = sh.worksheet('Напоминания').get_all_records()
@@ -926,7 +935,7 @@ def process_line_event(destination, event):
             return
         if result.startswith('ВАЖНО [ПРОБЛЕМА]'):
             save_проблемы(client_cfg['sheet_id'], text, result, now_str, event_id)
-            refresh_overview(client_cfg)
+            refresh_overview_safely(client_cfg)
             notify_owner(client_cfg, result)
             return
         try:
@@ -936,14 +945,14 @@ def process_line_event(destination, event):
             data = json.loads(json_match.group())
             if data['type'] == 'purchase':
                 save_закупки(client_cfg['sheet_id'], data['items'], date_only, event_id)
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 msg_text = "🛒 ЗАКУПКА записана:\n"
                 for item in data['items']:
                     msg_text += f"- {item['product']}: {item['quantity']}\n"
                 # уведомление в дайджесте 18:00
             elif data['type'] == 'stock':
                 save_остатки(client_cfg['sheet_id'], data['items'], date_only, event_id)
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 out = [i for i in data['items'] if i.get('note') in ['Out of stock','Exp today']]
                 low = [i for i in data['items'] if i.get('note') == 'Low stock']
                 msg_text = f"📦 ОСТАТКИ записаны ({len(data['items'])} позиций)\n"
@@ -956,7 +965,7 @@ def process_line_event(destination, event):
                 notify_owner(client_cfg, msg_text)
             elif data['type'] == 'single_stock':
                 save_одиночный_остаток(client_cfg['sheet_id'], data.get('product',''), data.get('amount',''), date_only, event_id)
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 notify_owner(client_cfg, f"📦 Остаток записан:\n{data.get('product','')}: {data.get('amount','')}")
             elif data['type'] == 'text_expense':
                 items = data.get('items', [])
@@ -964,7 +973,7 @@ def process_line_event(destination, event):
                 supplier = data.get('supplier', '')
                 positions = ', '.join([i['description'] for i in items if i.get('description')])
                 save_расходы(client_cfg['sheet_id'], [{'type': 'Закупка', 'description': positions, 'amount': total}], date_only, supplier, event_id=event_id, effect='text-expense')
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 notify_owner(client_cfg, f"💸 РАСХОД записан:\nМагазин: {supplier}\nПозиции: {positions}\nИтого: {total} THB")
         except Exception as e:
             raise RuntimeError(f"Text handler error: {e}") from e
@@ -986,7 +995,7 @@ def process_line_event(destination, event):
             logger.info('image_analysis_completed', extra={'event_id': event_id, 'document_type': doc_type or 'unknown'})
             if doc_type == 'shift':
                 save_выручка(client_cfg['sheet_id'], data, date_only, data.get('note',''), event_id)
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 diff = data.get('difference', 0)
                 msg_text = f"💰 Смена #{data.get('shift','?')}\n"
                 msg_text += f"📊 Выручка: {data.get('gross_sales','')} THB\n"
@@ -998,19 +1007,19 @@ def process_line_event(destination, event):
             elif doc_type == 'invoice':
                 save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''), event_id, 'invoice-expense')
                 check_price_drift(client_cfg['sheet_id'], data.get('items',[]), data.get('supplier',''), client_cfg, event_id)
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 notify_owner(client_cfg, f"🧾 НАКЛАДНАЯ записана\nПоставщик: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
             elif doc_type == 'expense':
                 save_расходы(client_cfg['sheet_id'], data.get('items',[]), date_only, data.get('supplier',''), data.get('note',''), event_id, 'receipt-expense')
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 notify_owner(client_cfg, f"🛒 РАСХОД записан\nМагазин: {data.get('supplier','—')}\nИтого: {data.get('total','—')} THB")
             elif doc_type == 'salary':
                 save_зарплаты(client_cfg['sheet_id'], [data], date_only, event_id)
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 notify_owner(client_cfg, f"💼 ЗАРПЛАТА записана\nПолучатель: {data.get('recipient','—')}\nСумма: {data.get('amount','—')} THB")
             elif doc_type == 'reminder':
                 save_напоминание(client_cfg['sheet_id'], data, date_only, event_id)
-                refresh_overview(client_cfg)
+                refresh_overview_safely(client_cfg)
                 notify_owner(client_cfg, f"📅 НАПОМИНАНИЕ записано\n📄 {data.get('title','—')}\n⏰ Истекает: {data.get('expiry_date','—')}")
             elif doc_type == 'notice':
                 notify_owner(client_cfg, f"⚡️ ВАЖНОЕ УВЕДОМЛЕНИЕ\n\n{data.get('title','')}\n\n{data.get('content','')}")
@@ -1024,7 +1033,7 @@ def process_line_event(destination, event):
                 if salaries:
                     save_зарплаты(client_cfg['sheet_id'], salaries, date_only, event_id)
                 if expenses or salaries:
-                    refresh_overview(client_cfg)
+                    refresh_overview_safely(client_cfg)
                 msg = f"🏦 ТРАНЗАКЦИИ записаны ({len(items)} шт)\n"
                 if expenses:
                     msg += f"💸 Расходы: {len(expenses)} шт\n"

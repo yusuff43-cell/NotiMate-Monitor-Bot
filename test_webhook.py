@@ -117,6 +117,11 @@ class WebhookTests(unittest.TestCase):
 
         self.assertEqual(app_module.ask_openai('secret', 'message', 100), 'Готово')
 
+    def test_overview_failure_does_not_break_confirmed_operation(self):
+        with patch.object(app_module, 'refresh_overview', side_effect=RuntimeError('temporary sheet error')):
+            with self.assertLogs('notimate', level='WARNING'):
+                self.assertIsNone(app_module.refresh_overview_safely(app_module.CLIENTS['Ubot']))
+
 
 if __name__ == '__main__':
     unittest.main()
