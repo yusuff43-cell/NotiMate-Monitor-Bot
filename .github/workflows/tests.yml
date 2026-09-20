@@ -1,0 +1,54 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the production image (Dockerfile); 3.11 is pinned in .python-version.
+        python-version: ["3.11", "3.12"]
+    env:
+      # The tests replace every external service; these only satisfy import-time checks.
+      OPENAI_API_KEY: ci-placeholder
+      GOOGLE_CREDENTIALS: "{}"
+      DISABLE_SCHEDULER: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Guard against committed secrets
+        run: |
+          if git grep -nIE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|\bsk-[A-Za-z0-9_-]{20,}|"private_key"\s*:\s*"-----' -- . ':!.github'; then
+            echo "Possible secret committed; remove it and rotate the credential." >&2
+            exit 1
+          fi
+
+      - name: Syntax checks
+        run: |
+          python -m py_compile app.py core.py event_store.py worker.py fixture_support.py deploy/*.py test_*.py
+          bash -n deploy/*.sh
+
+      - name: Unit, contract and fixture regression tests
+        run: python -m unittest discover -v -p "test_*.py"

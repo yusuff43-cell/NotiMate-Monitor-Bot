@@ -1,0 +1,378 @@
+{
+  "version": 1,
+  "source": "anonymized-real-patterns",
+  "description": "Handwritten, anonymized message shapes modelled on the real Just Specialty Coffee staff chat (mixed RU/TH/EN, multi-line 'Update' lists, totals with baht signs, chatter) and on the document types the bot reads. No real names, IDs, phones, links or bank data. 'model_output' is what the model is expected to return; offline tests check everything downstream of that, the opt-in live eval checks the model itself.",
+  "scenarios": [
+    {
+      "id": "en_stock_update_multiline",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Multi-line 'Update <date>' list: category headers, per-date sell-by counts",
+      "message": "Update 3/10/2025\nCroissant\nClear\n25/9=2\nChocolate\n28/9=1\n1/10=2\nAlmond\n28/9=1\nHam&cheese\n29/9=1\n\nDessert\nBounty\n-5/10=1\nHalva\n1/10=2",
+      "expected_type": "stock",
+      "model_output": "{\"type\":\"stock\",\"items\":[{\"category\":\"Круассаны\",\"product\":\"Масляный круассан\",\"fridge\":\"2\",\"freezer\":\"0\",\"note\":\"Low stock\"},{\"category\":\"Круассаны\",\"product\":\"Шоколадный круассан\",\"fridge\":\"3\",\"freezer\":\"0\",\"note\":\"\"},{\"category\":\"Круассаны\",\"product\":\"Миндальный круассан\",\"fridge\":\"1\",\"freezer\":\"0\",\"note\":\"Low stock\"},{\"category\":\"Круассаны\",\"product\":\"Круассан с ветчиной и сыром\",\"fridge\":\"1\",\"freezer\":\"0\",\"note\":\"Low stock\"},{\"category\":\"Десерты\",\"product\":\"Баунти\",\"fridge\":\"1\",\"freezer\":\"0\",\"note\":\"Low stock\"},{\"category\":\"Десерты\",\"product\":\"Халва\",\"fridge\":\"2\",\"freezer\":\"0\",\"note\":\"Low stock\"}]}",
+      "expect": {
+        "rows": {"Остатки": 6},
+        "notify_contains": ["ОСТАТКИ записаны (6 позиций)", "МАЛО ОСТАЛОСЬ", "Баунти"]
+      }
+    },
+    {
+      "id": "en_stock_out_and_expiring",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Update with a sold-out item and an item expiring today",
+      "message": "Update in fridge\nCheesecake 0\nBiscoff cheesecake exp today 2\nNapoleons 4",
+      "expected_type": "stock",
+      "model_output": "{\"type\":\"stock\",\"items\":[{\"category\":\"Десерты\",\"product\":\"Чизкейк\",\"fridge\":\"0\",\"freezer\":\"0\",\"note\":\"Out of stock\"},{\"category\":\"Десерты\",\"product\":\"Бискофф чизкейк\",\"fridge\":\"2\",\"freezer\":\"0\",\"note\":\"Exp today\"},{\"category\":\"Десерты\",\"product\":\"Наполеон\",\"fridge\":\"4\",\"freezer\":\"0\",\"note\":\"\"}]}",
+      "expect": {
+        "rows": {"Остатки": 3},
+        "notify_contains": ["ЗАКОНЧИЛОСЬ / ИСТЕКАЕТ СЕГОДНЯ", "Чизкейк", "Бискофф чизкейк"],
+        "notify_excludes": ["МАЛО ОСТАЛОСЬ", "Наполеон"]
+      }
+    },
+    {
+      "id": "ru_purchase_list",
+      "channel": "text",
+      "language": "ru",
+      "pattern": "Order list without prices, one product and quantity per line",
+      "message": "Нужно заказать на завтра:\nавокадо 5\nджем черничный 2\nсливки 3",
+      "expected_type": "purchase",
+      "model_output": "{\"type\":\"purchase\",\"items\":[{\"product\":\"Авокадо\",\"quantity\":\"5\"},{\"product\":\"Джем черничный\",\"quantity\":\"2\"},{\"product\":\"Сливки\",\"quantity\":\"3\"}]}",
+      "expect": {
+        "rows": {"Закупки": 3},
+        "notified": false
+      }
+    },
+    {
+      "id": "en_purchase_for_tomorrow",
+      "channel": "text",
+      "language": "en",
+      "pattern": "'For tomorrow' trigger followed by a short list",
+      "message": "For tomorrow:\nlemons 6\nmint 3",
+      "expected_type": "purchase",
+      "model_output": "{\"type\":\"purchase\",\"items\":[{\"product\":\"Лимоны\",\"quantity\":\"6\"},{\"product\":\"Мята\",\"quantity\":\"3\"}]}",
+      "expect": {
+        "rows": {"Закупки": 2},
+        "notified": false
+      }
+    },
+    {
+      "id": "th_purchase_list",
+      "channel": "text",
+      "language": "th",
+      "pattern": "Thai order list: 'need to order' with counters",
+      "message": "ต้องสั่งนมข้นหวาน 3 กระป๋อง\nครีมชีส 2 ก้อน",
+      "expected_type": "purchase",
+      "model_output": "{\"type\":\"purchase\",\"items\":[{\"product\":\"Сгущённое молоко\",\"quantity\":\"3\"},{\"product\":\"Сливочный сыр\",\"quantity\":\"2\"}]}",
+      "expect": {
+        "rows": {"Закупки": 2},
+        "notified": false
+      }
+    },
+    {
+      "id": "th_single_stock",
+      "channel": "text",
+      "language": "th",
+      "pattern": "One product and the amount left, no price",
+      "message": "นมข้นหวาน เหลือ 3 กระป๋อง",
+      "expected_type": "single_stock",
+      "model_output": "{\"type\":\"single_stock\",\"product\":\"Сгущённое молоко\",\"amount\":\"3 банки\"}",
+      "expect": {
+        "rows": {"Остатки": 1},
+        "notify_contains": ["Остаток записан", "Сгущённое молоко"]
+      }
+    },
+    {
+      "id": "en_single_stock_grams",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Product with weight in grams, arithmetic in the message",
+      "message": "Yogurt update 1347+(200g*6)=2,547 g",
+      "expected_type": "single_stock",
+      "model_output": "{\"type\":\"single_stock\",\"product\":\"Йогурт\",\"amount\":\"2547 г\"}",
+      "expect": {
+        "rows": {"Остатки": 1},
+        "notify_contains": ["Остаток записан", "Йогурт"]
+      }
+    },
+    {
+      "id": "en_expense_total_format",
+      "channel": "text",
+      "language": "en",
+      "pattern": "'N product TOTAL amount'",
+      "message": "2 sourdough TOTAL 110",
+      "expected_type": "text_expense",
+      "model_output": "{\"type\":\"text_expense\",\"supplier\":\"\",\"items\":[{\"description\":\"Хлеб на закваске ×2\"}],\"total\":\"110\"}",
+      "expect": {
+        "rows": {"Расходы": 1},
+        "cells": {"Расходы": {"Сумма (THB)": ["110"]}},
+        "notify_contains": ["РАСХОД записан", "110 THB"]
+      }
+    },
+    {
+      "id": "en_expense_baht_and_commas",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Baht signs and thousands separators must not reach the amount cell",
+      "message": "bought ice 2 bags =70฿\ncups 1,200฿",
+      "expected_type": "text_expense",
+      "model_output": "{\"type\":\"text_expense\",\"supplier\":\"Демо-магазин\",\"items\":[{\"description\":\"лёд ×2, стаканы\"}],\"total\":\"1,270฿\"}",
+      "expect": {
+        "rows": {"Расходы": 1},
+        "cells": {"Расходы": {"Сумма (THB)": ["1270"]}},
+        "notify_contains": ["РАСХОД записан", "Демо-магазин"]
+      }
+    },
+    {
+      "id": "th_expense_paid",
+      "channel": "text",
+      "language": "th",
+      "pattern": "Thai 'paid for X, N baht'",
+      "message": "จ่ายค่าน้ำแข็ง 70 บาท",
+      "expected_type": "text_expense",
+      "model_output": "{\"type\":\"text_expense\",\"supplier\":\"\",\"items\":[{\"description\":\"лёд\"}],\"total\":\"70\"}",
+      "expect": {
+        "rows": {"Расходы": 1},
+        "cells": {"Расходы": {"Сумма (THB)": ["70"]}},
+        "notify_contains": ["РАСХОД записан", "70 THB"]
+      }
+    },
+    {
+      "id": "ru_problem_equipment",
+      "channel": "text",
+      "language": "ru",
+      "pattern": "Equipment failure reported in plain words",
+      "message": "Сломалась кофемашина, вызвали мастера",
+      "expected_type": "problem",
+      "model_output": "ВАЖНО [ПРОБЛЕМА]: Сломалась кофемашина, вызван мастер\n💡 Совет: подготовить запасной способ приготовления кофе",
+      "expect": {
+        "rows": {"Проблемы": 1},
+        "notify_contains": ["ВАЖНО [ПРОБЛЕМА]", "кофемашина"]
+      }
+    },
+    {
+      "id": "th_problem_fridge",
+      "channel": "text",
+      "language": "th",
+      "pattern": "Thai incident report",
+      "message": "ตู้เย็นไม่เย็นเลยค่ะ",
+      "expected_type": "problem",
+      "model_output": "ВАЖНО [ПРОБЛЕМА]: Холодильник совсем не охлаждает\n💡 Совет: перенести скоропортящиеся продукты в рабочий холодильник",
+      "expect": {
+        "rows": {"Проблемы": 1},
+        "notify_contains": ["ВАЖНО [ПРОБЛЕМА]", "Холодильник"]
+      }
+    },
+    {
+      "id": "en_problem_alarm",
+      "channel": "text",
+      "language": "en",
+      "pattern": "English incident with a measurement",
+      "message": "Freezer alarm is beeping, temperature -5",
+      "expected_type": "problem",
+      "model_output": "ВАЖНО [ПРОБЛЕМА]: Сигнализация морозилки, температура -5\n💡 Совет: проверить дверцу и убрать продукты в запасную морозилку",
+      "expect": {
+        "rows": {"Проблемы": 1},
+        "notify_contains": ["ВАЖНО [ПРОБЛЕМА]", "морозилк"]
+      }
+    },
+    {
+      "id": "en_chatter_ack",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Acknowledgement with emoji",
+      "message": "Ok 👌",
+      "expected_type": "ignore",
+      "model_output": "IGNORE",
+      "expect": {"rows": {}, "notified": false}
+    },
+    {
+      "id": "th_chatter_thanks",
+      "channel": "text",
+      "language": "th",
+      "pattern": "Thai thanks",
+      "message": "ขอบคุณค่ะ",
+      "expected_type": "ignore",
+      "model_output": "IGNORE",
+      "expect": {"rows": {}, "notified": false}
+    },
+    {
+      "id": "ru_chatter_thanks",
+      "channel": "text",
+      "language": "ru",
+      "pattern": "Russian acknowledgement",
+      "message": "Хорошо, спасибо",
+      "expected_type": "ignore",
+      "model_output": "IGNORE",
+      "expect": {"rows": {}, "notified": false}
+    },
+    {
+      "id": "en_request_for_update_no_data",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Manager asks the team for an update; the message itself carries no data",
+      "message": "Girls update please\nI'll tell how many to prepare 🙏",
+      "expected_type": "ignore",
+      "model_output": "IGNORE",
+      "expect": {"rows": {}, "notified": false}
+    },
+    {
+      "id": "en_json_wrapped_in_prose",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Model wraps the JSON in prose and a code fence",
+      "message": "avocado 5",
+      "expected_type": "purchase",
+      "model_output": "Вот результат:\n```json\n{\"type\":\"purchase\",\"items\":[{\"product\":\"Авокадо\",\"quantity\":\"5\"}]}\n```",
+      "expect": {
+        "rows": {"Закупки": 1},
+        "notified": false
+      }
+    },
+    {
+      "id": "en_truncated_json_fails_loudly",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Truncated model output must raise so the worker retries, never be dropped silently",
+      "message": "need milk 2 and eggs 10",
+      "expected_type": "malformed",
+      "offline_only": true,
+      "model_output":"{\"type\":\"purchase\",\"items\":[{\"product\":\"Молоко\",\"quantity\":\"2\"}",
+      "expect": {
+        "raises": true,
+        "rows": {},
+        "notified": false
+      }
+    },
+    {
+      "id": "en_missing_type_key_fails_loudly",
+      "channel": "text",
+      "language": "en",
+      "pattern": "Valid JSON without a 'type' key must raise, not be dropped silently",
+      "message": "need milk 2",
+      "expected_type": "missing_type",
+      "offline_only": true,
+      "model_output":"{\"items\":[{\"product\":\"Молоко\",\"quantity\":\"2\"}]}",
+      "expect": {
+        "raises": true,
+        "rows": {},
+        "notified": false
+      }
+    },
+    {
+      "id": "th_supplier_invoice",
+      "channel": "image",
+      "language": "th",
+      "pattern": "Supplier delivery note with unit price and line amount",
+      "document": "Synthetic description: Thai delivery note, three lines, unit price and amount columns, grand total 1360.",
+      "expected_type": "invoice",
+      "model_output": "{\"doc_type\":\"invoice\",\"supplier\":\"Демо-поставщик\",\"items\":[{\"description\":\"Авокадо\",\"unit_price\":\"120\",\"amount\":\"600\"},{\"description\":\"Сливки\",\"unit_price\":\"85\",\"amount\":\"340\"},{\"description\":\"Джем черничный\",\"unit_price\":\"210\",\"amount\":\"420\"}],\"total\":\"1360\",\"note\":\"\"}",
+      "expect": {
+        "rows": {"Расходы": 3, "Цены": 3},
+        "notify_contains": ["НАКЛАДНАЯ записана", "Демо-поставщик", "1360 THB"]
+      }
+    },
+    {
+      "id": "en_shop_receipt",
+      "channel": "image",
+      "language": "en",
+      "pattern": "Shop receipt photo",
+      "document": "Synthetic description: English supermarket receipt, two lines, total 245.",
+      "expected_type": "expense",
+      "model_output": "{\"doc_type\":\"expense\",\"supplier\":\"Демо-маркет\",\"items\":[{\"description\":\"молоко\",\"amount\":\"95\"},{\"description\":\"яйца\",\"amount\":\"150\"}],\"total\":\"245\",\"note\":\"\"}",
+      "expect": {
+        "rows": {"Расходы": 2},
+        "cells": {"Расходы": {"Сумма (THB)": ["95", "150"]}},
+        "notify_contains": ["РАСХОД записан", "Демо-маркет", "245 THB"]
+      }
+    },
+    {
+      "id": "en_shift_report_shortage",
+      "channel": "image",
+      "language": "en",
+      "pattern": "Shift report where the cash drawer is short",
+      "document": "Synthetic description: POS shift report, gross sales 8200, cash 2500, card 3700, QR 2050, difference -50.",
+      "expected_type": "shift",
+      "model_output": "{\"doc_type\":\"shift\",\"shift\":\"DEMO-7\",\"gross_sales\":8200,\"cash\":2500,\"card\":3700,\"qr\":2050,\"difference\":-50,\"note\":\"\"}",
+      "expect": {
+        "rows": {"Выручка": 1},
+        "notify_contains": ["Смена #DEMO-7", "8200 THB", "Касса: -50 THB"]
+      }
+    },
+    {
+      "id": "th_salary_transfer",
+      "channel": "image",
+      "language": "th",
+      "pattern": "Bank transfer slip to an employee",
+      "document": "Synthetic description: Thai banking app 'Transfer Completed' slip, amount 15000, recipient masked.",
+      "expected_type": "salary",
+      "model_output": "{\"doc_type\":\"salary\",\"recipient\":\"Сотрудник А\",\"amount\":15000,\"note\":\"\"}",
+      "expect": {
+        "rows": {"Зарплаты": 1},
+        "notify_contains": ["ЗАРПЛАТА записана", "15000 THB"]
+      }
+    },
+    {
+      "id": "en_bank_history_mixed",
+      "channel": "image",
+      "language": "en",
+      "pattern": "Screenshot of transaction history: two payments and one transfer to a person",
+      "document": "Synthetic description: banking app transaction history, two 'Payment' rows and one PromptPay transfer to a private person.",
+      "expected_type": "bank_history",
+      "model_output": "{\"doc_type\":\"bank_history\",\"items\":[{\"type\":\"expense\",\"recipient\":\"Демо-магазин\",\"amount\":320,\"note\":\"\"},{\"type\":\"expense\",\"recipient\":\"Демо-кафе\",\"amount\":180,\"note\":\"\"},{\"type\":\"salary\",\"recipient\":\"Сотрудник Б\",\"amount\":9000,\"note\":\"\"}]}",
+      "expect": {
+        "rows": {"Расходы": 2, "Зарплаты": 1},
+        "notify_contains": ["ТРАНЗАКЦИИ записаны (3 шт)", "Расходы: 2 шт", "Зарплаты: 1 шт"]
+      }
+    },
+    {
+      "id": "ru_license_expiry",
+      "channel": "image",
+      "language": "ru",
+      "pattern": "Document with an expiry date",
+      "document": "Synthetic description: rental or license paper with an end date.",
+      "expected_type": "reminder",
+      "model_output": "{\"doc_type\":\"reminder\",\"title\":\"Демо-лицензия на продажу напитков\",\"expiry_date\":\"2026-12-31\",\"note\":\"\"}",
+      "expect": {
+        "rows": {"Напоминания": 1},
+        "notify_contains": ["НАПОМИНАНИЕ записано", "2026-12-31"]
+      }
+    },
+    {
+      "id": "th_landlord_notice",
+      "channel": "image",
+      "language": "th",
+      "pattern": "Building notice that the owner should read but nothing to record",
+      "document": "Synthetic description: Thai notice about a planned water shutdown.",
+      "expected_type": "notice",
+      "model_output": "{\"doc_type\":\"notice\",\"title\":\"Плановое отключение воды\",\"content\":\"Завтра с 9:00 до 13:00 воды не будет\",\"note\":\"\"}",
+      "expect": {
+        "rows": {},
+        "notify_contains": ["ВАЖНОЕ УВЕДОМЛЕНИЕ", "Плановое отключение воды"]
+      }
+    },
+    {
+      "id": "en_photo_not_finance",
+      "channel": "image",
+      "language": "en",
+      "pattern": "Product photo or price tag without a document",
+      "document": "Synthetic description: photo of a shelf with price tags.",
+      "expected_type": "not_finance",
+      "model_output": "NOT_FINANCE",
+      "expect": {"rows": {}, "notified": false}
+    },
+    {
+      "id": "en_receipt_json_wrapped_in_prose",
+      "channel": "image",
+      "language": "en",
+      "pattern": "Vision model adds an explanation around the JSON",
+      "document": "Synthetic description: small cafe receipt, total 120.",
+      "expected_type": "expense",
+      "model_output": "Документ распознан.\n{\"doc_type\":\"expense\",\"supplier\":\"Демо-кафе\",\"items\":[{\"description\":\"кофе\",\"amount\":\"120\"}],\"total\":\"120\",\"note\":\"\"}",
+      "expect": {
+        "rows": {"Расходы": 1},
+        "notify_contains": ["РАСХОД записан", "120 THB"]
+      }
+    }
+  ]
+}
