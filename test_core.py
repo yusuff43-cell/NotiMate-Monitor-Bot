@@ -7,6 +7,7 @@ from core import (
     SUPPORTED_INPUT_LANGUAGES,
     client_prompt_context,
     days_until,
+    is_group_allowed,
     validate_clients,
 )
 
@@ -47,6 +48,38 @@ class CoreTests(unittest.TestCase):
     def test_language_contract_is_russian_owner_with_multilingual_input(self):
         self.assertEqual(OWNER_OUTPUT_LANGUAGE, "ru")
         self.assertEqual(SUPPORTED_INPUT_LANGUAGES, ("ru", "th", "en"))
+
+
+class GroupAllowlistTests(unittest.TestCase):
+    def test_absent_allowlist_keeps_legacy_behaviour(self):
+        self.assertTrue(is_group_allowed(VALID_CLIENT, {"type": "group", "groupId": "Canything"}))
+
+    def test_only_listed_group_is_allowed(self):
+        cfg = {**VALID_CLIENT, "allowed_group_ids": ["Cwork"]}
+        self.assertTrue(is_group_allowed(cfg, {"type": "group", "groupId": "Cwork"}))
+        self.assertFalse(is_group_allowed(cfg, {"type": "group", "groupId": "Ctest"}))
+
+    def test_room_id_is_checked_too(self):
+        cfg = {**VALID_CLIENT, "allowed_group_ids": ["Rroom"]}
+        self.assertTrue(is_group_allowed(cfg, {"type": "room", "roomId": "Rroom"}))
+        self.assertFalse(is_group_allowed(cfg, {"type": "room", "roomId": "Rother"}))
+
+    def test_empty_allowlist_rejects_every_group(self):
+        cfg = {**VALID_CLIENT, "allowed_group_ids": []}
+        self.assertFalse(is_group_allowed(cfg, {"type": "group", "groupId": "Cwork"}))
+
+    def test_event_without_group_id_is_rejected_when_allowlist_is_set(self):
+        cfg = {**VALID_CLIENT, "allowed_group_ids": ["Cwork"]}
+        self.assertFalse(is_group_allowed(cfg, {"type": "group"}))
+
+    def test_validate_clients_rejects_malformed_allowlist(self):
+        for bad in ("Cwork", [1], [""], {"a": "b"}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    validate_clients({"Ubot": {**VALID_CLIENT, "allowed_group_ids": bad}})
+
+    def test_validate_clients_accepts_valid_allowlist(self):
+        validate_clients({"Ubot": {**VALID_CLIENT, "allowed_group_ids": ["Cwork"]}})
 
 
 if __name__ == "__main__":

@@ -21,7 +21,14 @@ from google.oauth2.service_account import Credentials
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 
-from core import bangkok_date, bangkok_now, client_prompt_context, days_until, validate_clients
+from core import (
+    bangkok_date,
+    bangkok_now,
+    client_prompt_context,
+    days_until,
+    is_group_allowed,
+    validate_clients,
+)
 from event_store import PostgresEventStore
 from logging_utils import get_logger
 
@@ -905,9 +912,13 @@ def process_line_event(destination, event):
         raise ValueError(f"Unknown destination: {destination}")
     if event.get('type') != 'message':
         return
+    source = event.get('source', {})
+    if source.get('type') in ('group', 'room') and not is_group_allowed(client_cfg, source):
+        # Content-free: nothing from this group reaches OpenAI, Sheets or the owner.
+        logger.info('event_skipped_group_not_allowed', extra={'event_id': event.get('webhookEventId')})
+        return
     if not SHEETS_ENABLED:
         raise RuntimeError('Google Sheets is not ready')
-    source = event.get('source', {})
     if source.get('type') not in ('group', 'room'):
         allowed_owners = {client_cfg.get('owner_line_id'), client_cfg.get('owner_line_id_2')}
         if source.get('userId') not in allowed_owners:

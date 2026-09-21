@@ -54,10 +54,29 @@ def validate_clients(clients: object) -> dict[str, Mapping[str, object]]:
         ]
         if missing:
             errors.append(f"{destination}: missing {', '.join(missing)}")
+        allowed = config.get("allowed_group_ids")
+        if allowed is not None and (
+            not isinstance(allowed, list)
+            or any(not isinstance(item, str) or not item.strip() for item in allowed)
+        ):
+            errors.append(f"{destination}: allowed_group_ids must be a list of non-empty strings")
 
     if errors:
         raise ValueError("Invalid client configuration: " + "; ".join(errors))
     return clients
+
+
+def is_group_allowed(client_cfg: Mapping[str, object], source: Mapping[str, object]) -> bool:
+    """Decide whether a group/room event may be processed for this client.
+
+    ``allowed_group_ids`` absent -> legacy behaviour, every group of the bot is accepted.
+    ``allowed_group_ids`` present (even empty) -> only listed groupId/roomId are accepted.
+    """
+    allowed = client_cfg.get("allowed_group_ids")
+    if allowed is None:
+        return True
+    group_id = source.get("groupId") or source.get("roomId")
+    return isinstance(group_id, str) and group_id in allowed
 
 
 def client_prompt_context(client_cfg: Mapping[str, object]) -> str:
