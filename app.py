@@ -526,19 +526,6 @@ def _rows_for_date(rows, date_prefix, amount_field):
     return sum(_money(row.get(amount_field)) for row in rows if str(row.get('Дата', '')).startswith(date_prefix))
 
 
-def _available_business_dates(*row_sets):
-    dates = set()
-    for rows in row_sets:
-        for row in rows:
-            candidate = str(row.get('Дата', '')).strip()[:10]
-            try:
-                datetime.datetime.strptime(candidate, '%Y-%m-%d')
-                dates.add(candidate)
-            except ValueError:
-                continue
-    return sorted(dates)
-
-
 def _dashboard_label(value, limit=22):
     """Keep chart labels scannable without changing source worksheet data."""
     label = ' '.join(str(value or '').split()) or 'Без поставщика'
@@ -561,8 +548,9 @@ def refresh_overview(client_cfg):
         expense_rows = sh.worksheet('Расходы').get_all_records()
     except Exception:
         expense_rows = []
-    available_dates = _available_business_dates(revenue_rows, expense_rows)
-    dashboard_date = available_dates[-1] if available_dates else now.strftime('%Y-%m-%d')
+    # «Сегодня» — календарная дата Asia/Bangkok, а не последняя запись в таблице:
+    # день или месяц без записей показывает нули, а не цифры старого периода.
+    dashboard_date = now.strftime('%Y-%m-%d')
     dashboard_day = datetime.datetime.strptime(dashboard_date, '%Y-%m-%d').replace(tzinfo=tz)
     month = dashboard_date[:7]
     revenue_today = _rows_for_date(revenue_rows, dashboard_date, 'Gross Sales')

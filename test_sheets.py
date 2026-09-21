@@ -162,6 +162,40 @@ class SheetsIdempotencyTests(unittest.TestCase):
         self.assertIn('Молоко', flat)
         self.assertIn('Лицензия', flat)
 
+    def _overview_at(self, revenue_rows, expense_rows, year, month, day):
+        revenue = FakeWorksheet(['Дата', 'Gross Sales'])
+        for row in revenue_rows:
+            revenue.append_row(list(row))
+        expenses = FakeWorksheet(['Дата', 'Сумма (THB)'])
+        for row in expense_rows:
+            expenses.append_row(list(row))
+        self.spreadsheet.sheets.update({'Выручка': revenue, 'Расходы': expenses})
+        with patch.object(app_module.datetime, 'datetime', wraps=app_module.datetime.datetime) as clock:
+            clock.now.return_value = app_module.pytz.timezone('Asia/Bangkok').localize(
+                app_module.datetime.datetime(year, month, day, 12, 0))
+            app_module.refresh_overview(self.cfg)
+        return self.spreadsheet.worksheet('Обзор').rows
+
+    def test_overview_anchors_to_today_not_to_last_data_row(self):
+        # Last data is from September; today is 1 October with no records yet.
+        rows = self._overview_at([('2026-09-30', '5000')], [('2026-09-30', '900')], 2026, 10, 1)
+        flat = ' '.join(str(cell) for row in rows for cell in row)
+        self.assertIn('Выручка · 01.10.2026', flat)
+        self.assertEqual(0, float(rows[5][0] or 0))   # revenue today
+        self.assertEqual(0, float(rows[8][0] or 0))   # revenue this month
+
+    def test_overview_month_starts_on_the_first_and_today_may_be_empty(self):
+        # Records on the 3rd and 10th, today is the 15th with nothing yet: month totals
+        # include earlier days of the same calendar month but not the previous month.
+        rows = self._overview_at(
+            [('2026-08-31', '7000'), ('2026-09-03', '1000'), ('2026-09-10', '2000')],
+            [('2026-09-03', '300'), ('2026-09-10', '200')],
+            2026, 9, 15,
+        )
+        self.assertEqual(0, float(rows[5][0] or 0))       # revenue today (15th)
+        self.assertEqual(3000, float(rows[8][0]))         # September revenue only
+        self.assertEqual(500, float(rows[8][4]))          # September expenses
+
     def test_ru_th_en_and_image_document_scenarios_are_projected_once(self):
         scenarios = load_scenarios()
         text_cases = [case for case in scenarios if case['channel'] == 'text']
