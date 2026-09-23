@@ -181,3 +181,18 @@ class PostgresTenantStore:
                 'owner_ids': row['owner_ids'],
             },
         }
+
+    def list_channels(self, channel: str) -> list[dict[str, Any]]:
+        """List every active tenant+channel row for one channel — used to enumerate
+        WhatsApp tenants for per-tenant scheduled jobs (Этап 6's evening summary)."""
+        with _driver()[0].connect(self.database_url, row_factory=_driver()[1]) as conn:
+            rows = conn.execute(
+                """
+                SELECT c.external_id
+                FROM tenant_channels c
+                JOIN tenants t ON t.id = c.tenant_id
+                WHERE c.channel = %s AND t.status = 'active'
+                """,
+                (channel,),
+            ).fetchall()
+        return [row for row in (self.find_channel(channel, r['external_id']) for r in rows) if row]

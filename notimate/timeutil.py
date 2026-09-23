@@ -11,6 +11,7 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+ALMATY_TZ = ZoneInfo("Asia/Almaty")
 
 
 def bangkok_now() -> dt.datetime:
@@ -19,6 +20,14 @@ def bangkok_now() -> dt.datetime:
 
 def bangkok_date() -> str:
     return bangkok_now().date().isoformat()
+
+
+def almaty_now() -> dt.datetime:
+    return dt.datetime.now(ALMATY_TZ)
+
+
+def almaty_date() -> str:
+    return almaty_now().date().isoformat()
 
 
 def days_until(expiry: str, *, now: dt.datetime | None = None) -> int:

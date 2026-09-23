@@ -33,6 +33,7 @@ from notimate.tenants import channel_row_to_client_cfg, validate_clients, whatsa
 from notimate.tenant_store import PostgresTenantStore
 from notimate.inbound_store import PostgresInboundStore
 from notimate.projections.operations_store import PostgresOperationsStore
+from notimate.packs.location_reports import PostgresLocationReportsStore, process_location_report_event, send_evening_summary as location_reports_evening_summary
 from event_store import PostgresEventStore
 from logging_utils import get_logger
 
@@ -91,6 +92,17 @@ if operations_store:
         OPERATIONS_DB_ENABLED = True
     except Exception as exc:
         logger.error('operations_store_init_failed', extra={'error_type': type(exc).__name__})
+
+# «Отчёты точек» (Этап 6): locations/staff/drafts for WhatsApp tenants whose
+# tenants.vertical_pack == 'location_reports' (see notimate/pipeline.py:process_whatsapp_event).
+location_reports_store = PostgresLocationReportsStore(DATABASE_URL) if DATABASE_URL else None
+LOCATION_REPORTS_DB_ENABLED = False
+if location_reports_store:
+    try:
+        location_reports_store.initialize()
+        LOCATION_REPORTS_DB_ENABLED = True
+    except Exception as exc:
+        logger.error('location_reports_store_init_failed', extra={'error_type': type(exc).__name__})
 
 WHATSAPP_SECRETS = json.loads(os.environ['WHATSAPP_SECRETS_JSON']) if os.environ.get('WHATSAPP_SECRETS_JSON') else {}
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.environ.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN', '')
@@ -160,6 +172,7 @@ from notimate.channels.line import (  # noqa: E402
 )
 from notimate.channels.whatsapp import (  # noqa: E402
     extract_messages as whatsapp_extract_messages,
+    send_interactive_buttons as whatsapp_send_interactive_buttons,
     send_text as whatsapp_send_text,
     verify_signature as whatsapp_verify_signature,
     verify_webhook_challenge as whatsapp_verify_webhook_challenge,
@@ -309,6 +322,26 @@ try:
         if cfg.get('sheet_id') and gc:
             scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, args=[cfg], id=f"evening_{bot_id}")
             scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
+    # «Отчёты точек» (Этап 6): 20:00 Asia/Almaty digest per WhatsApp tenant running that
+    # pack, one job per configured owner. A per-job timezone works alongside the
+    # scheduler's own Asia/Bangkok default (APScheduler supports this per trigger).
+    if tenant_store is not None and TENANTS_DB_ENABLED:
+        try:
+            for row in tenant_store.list_channels('whatsapp'):
+                if row['tenant'].get('vertical_pack') != 'location_reports':
+                    continue
+                config = whatsapp_channel_config(row, WHATSAPP_SECRETS.get(row['channel']['secret_ref']))
+                if not config:
+                    continue
+                for owner_id in row['channel']['owner_ids'] or []:
+                    scheduler.add_job(
+                        location_reports_evening_summary, 'cron', hour=20, minute=0,
+                        timezone=pytz.timezone('Asia/Almaty'),
+                        args=[row['tenant']['id'], config['access_token'], config['phone_number_id'], owner_id],
+                        id=f"location_summary_{row['tenant']['id']}_{owner_id}",
+                    )
+        except Exception as exc:
+            logger.warning('location_reports_scheduling_failed', extra={'error_type': type(exc).__name__})
     scheduler.start()
     logger.info('scheduler_started')
 except Exception as exc:

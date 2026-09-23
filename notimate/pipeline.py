@@ -218,9 +218,10 @@ def process_line_event(destination, event):
 def process_whatsapp_event(phone_number_id, message):
     """Process one inbound WhatsApp message claimed by the durable worker.
 
-    Этап 3 MVP per docs/21: proves the adapter → inbound_events → worker → reply loop
-    works end to end for a real WhatsApp number. Real business logic (drafts, «Отчёты
-    точек») is Этап 6 — this only acknowledges receipt so far.
+    A tenant whose vertical_pack is 'location_reports' (Этап 6) gets the real draft →
+    confirm/cancel flow for Ержан's «Отчёты точек»; every other WhatsApp tenant still gets
+    the Этап 3 MVP acknowledgement — proves the adapter → inbound_events → worker → reply
+    loop works before any pack-specific business logic exists for it.
     """
     row = app.find_whatsapp_channel(phone_number_id)
     if not row:
@@ -230,6 +231,9 @@ def process_whatsapp_event(phone_number_id, message):
         raise RuntimeError('WhatsApp channel config is incomplete')
     inbound = build_whatsapp_inbound_message(row, message)
     if not inbound.text:
+        return
+    if row['tenant'].get('vertical_pack') == 'location_reports':
+        app.process_location_report_event(row, config, inbound)
         return
     app.whatsapp_send_text(
         config['access_token'], config['phone_number_id'], inbound.sender_id,
