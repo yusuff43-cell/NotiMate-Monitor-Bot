@@ -327,6 +327,15 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
         reply('Модуль отчётов временно недоступен.')
         return
 
+    if text.startswith('report:edit:'):
+        draft_id = text.split(':', 2)[2]
+        try:
+            store.cancel_draft(draft_id)
+        except (KeyError, DraftAlreadyFinalized):
+            pass  # already gone either way — we only need the user to resend, not this draft
+        reply('Отправьте исправленный отчёт целиком — я создам новый черновик.')
+        return
+
     if text.startswith('report:confirm:') or text.startswith('report:cancel:'):
         draft_id = text.split(':', 2)[2]
         action = store.confirm_draft if text.startswith('report:confirm:') else store.cancel_draft
@@ -374,7 +383,11 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
     app.whatsapp_send_interactive_buttons(
         access_token, phone_number_id, inbound.sender_id,
         format_draft_message(staff['location_name'], fields),
-        [(f'report:confirm:{draft_id}', 'Сохранить'), (f'report:cancel:{draft_id}', 'Отмена')],
+        [
+            (f'report:confirm:{draft_id}', 'Сохранить'),
+            (f'report:edit:{draft_id}', 'Изменить'),
+            (f'report:cancel:{draft_id}', 'Отмена'),
+        ],
     )
 
 

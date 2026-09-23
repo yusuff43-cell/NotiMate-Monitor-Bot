@@ -110,8 +110,23 @@ class DispatchTests(unittest.TestCase):
         self.store.create_draft.assert_called_once()
         self.send_buttons.assert_called_once()
         buttons = self.send_buttons.call_args.args[4]
+        self.assertEqual(len(buttons), 3)
         self.assertEqual(buttons[0][0], 'report:confirm:abc123')
-        self.assertEqual(buttons[1][0], 'report:cancel:abc123')
+        self.assertEqual(buttons[1][0], 'report:edit:abc123')
+        self.assertEqual(buttons[2][0], 'report:cancel:abc123')
+
+    def test_edit_button_cancels_draft_and_asks_to_resend(self):
+        self.store.cancel_draft.return_value = {'sender_id': '77001112233', 'location_id': 'loc-1'}
+        process_location_report_event(ROW, CONFIG, inbound('77001112233', 'report:edit:abc123'))
+        self.store.cancel_draft.assert_called_once_with('abc123')
+        self.assertIn('исправленный', self.send_text.call_args.args[3])
+
+    def test_edit_button_on_already_settled_draft_still_asks_to_resend(self):
+        # The draft might already be confirmed/cancelled (race with another tap) — editing
+        # should still work: we only need the user to resend, not that specific draft.
+        self.store.cancel_draft.side_effect = DraftAlreadyFinalized('already done')
+        process_location_report_event(ROW, CONFIG, inbound('77001112233', 'report:edit:abc123'))
+        self.assertIn('исправленный', self.send_text.call_args.args[3])
 
     def test_unparseable_text_asks_to_retry(self):
         self.store.find_staff.return_value = {'location_id': 'loc-1', 'location_name': 'Точка 1'}

@@ -99,6 +99,53 @@ def send_text(access_token: str, phone_number_id: str, recipient: str, body: str
     })
 
 
+def configure_conversational_automation(
+    access_token: str, phone_number_id: str,
+    commands: list[tuple[str, str]] | None = None,
+    prompts: list[str] | None = None,
+    enable_welcome_message: bool | None = None,
+) -> dict:
+    """Set the number's «/» command list and ice breaker prompts.
+
+    WhatsApp has no persistent docked button bar like LINE's Rich Menu — this is the
+    closest real equivalent: ``commands`` (up to 30, shown when the user types "/" in the
+    message box) and ``prompts`` (up to 4 ice breakers, shown only before the very first
+    message in a new chat). ``commands`` is a list of ``(command_name, command_description)``
+    pairs — Meta limits ``command_name`` to 32 characters and ``command_description`` to
+    256. One-time per-number config, not sent with every message; call once (e.g. from a
+    deploy script), not from the message-handling path.
+
+    https://developers.facebook.com/docs/whatsapp/cloud-api/phone-numbers/conversational-components/
+    """
+    payload: dict = {}
+    if commands is not None:
+        if len(commands) > 30:
+            raise ValueError('WhatsApp allows at most 30 commands')
+        payload['commands'] = [
+            {'command_name': name, 'command_description': description} for name, description in commands
+        ]
+    if prompts is not None:
+        if len(prompts) > 4:
+            raise ValueError('WhatsApp allows at most 4 ice breaker prompts')
+        payload['prompts'] = prompts
+    if enable_welcome_message is not None:
+        payload['enable_welcome_message'] = enable_welcome_message
+
+    body = json.dumps(payload).encode('utf-8')
+    request = urllib.request.Request(
+        f'{GRAPH_BASE_URL}/{GRAPH_VERSION}/{phone_number_id}/conversational_automation',
+        data=body,
+        method='POST',
+        headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode('utf-8') or '{}')
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f'WhatsApp conversational_automation config failed ({exc.code}): {detail}') from exc
+
+
 def send_interactive_buttons(access_token: str, phone_number_id: str, recipient: str, body: str, buttons: list[tuple[str, str]]) -> dict:
     """Send up to 3 reply buttons. ``buttons`` is a list of ``(id, title)`` pairs."""
     if not 1 <= len(buttons) <= 3:

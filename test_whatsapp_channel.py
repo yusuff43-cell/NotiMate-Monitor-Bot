@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from notimate.channels.whatsapp import (
+    configure_conversational_automation,
     extract_messages,
     is_within_free_form_window,
     send_interactive_buttons,
@@ -225,6 +226,58 @@ class SendingTests(unittest.TestCase):
         with patch('notimate.channels.whatsapp.urllib.request.urlopen', side_effect=fake_urlopen):
             with self.assertRaisesRegex(RuntimeError, 'bad token'):
                 send_text('bad-token', 'PNID-1', '77009998877', 'hi')
+
+
+class ConversationalAutomationTests(unittest.TestCase):
+    def _capture(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+            def read(self_inner):
+                return b'{"success":true}'
+
+        def fake_urlopen(request, timeout=None):
+            captured['url'] = request.full_url
+            captured['body'] = json.loads(request.data.decode('utf-8'))
+            return FakeResponse()
+
+        return captured, fake_urlopen
+
+    def test_posts_commands_and_prompts_to_conversational_automation(self):
+        captured, fake_urlopen = self._capture()
+        with patch('notimate.channels.whatsapp.urllib.request.urlopen', side_effect=fake_urlopen):
+            configure_conversational_automation(
+                'tok', 'PNID-1',
+                commands=[('summary', 'Сводка по точкам сегодня'), ('missing', 'Кто ещё не отчитался')],
+                prompts=['Сводка по точкам', 'Кто не отчитался'],
+            )
+        self.assertIn('PNID-1/conversational_automation', captured['url'])
+        self.assertEqual(captured['body']['commands'], [
+            {'command_name': 'summary', 'command_description': 'Сводка по точкам сегодня'},
+            {'command_name': 'missing', 'command_description': 'Кто ещё не отчитался'},
+        ])
+        self.assertEqual(captured['body']['prompts'], ['Сводка по точкам', 'Кто не отчитался'])
+        self.assertNotIn('enable_welcome_message', captured['body'])
+
+    def test_omitted_fields_are_not_sent(self):
+        captured, fake_urlopen = self._capture()
+        with patch('notimate.channels.whatsapp.urllib.request.urlopen', side_effect=fake_urlopen):
+            configure_conversational_automation('tok', 'PNID-1', enable_welcome_message=True)
+        self.assertEqual(captured['body'], {'enable_welcome_message': True})
+
+    def test_rejects_more_than_30_commands(self):
+        with self.assertRaises(ValueError):
+            configure_conversational_automation('tok', 'PNID-1', commands=[(str(i), 'x') for i in range(31)])
+
+    def test_rejects_more_than_4_prompts(self):
+        with self.assertRaises(ValueError):
+            configure_conversational_automation('tok', 'PNID-1', prompts=['a', 'b', 'c', 'd', 'e'])
 
 
 if __name__ == '__main__':
