@@ -47,7 +47,7 @@ jobs:
 
       - name: Syntax checks
         run: |
-          python -m py_compile app.py core.py event_store.py worker.py fixture_support.py deploy/*.py test_*.py
+          python -m py_compile app.py event_store.py worker.py fixture_support.py deploy/*.py test_*.py notimate/*.py notimate/*/*.py
           bash -n deploy/*.sh
 
       - name: Unit, contract and fixture regression tests

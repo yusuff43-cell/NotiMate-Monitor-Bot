@@ -1,15 +1,14 @@
 import datetime as dt
 import unittest
 
-from core import (
-    BANGKOK_TZ,
+from notimate.tenants import (
     OWNER_OUTPUT_LANGUAGE,
     SUPPORTED_INPUT_LANGUAGES,
     client_prompt_context,
-    days_until,
     is_group_allowed,
     validate_clients,
 )
+from notimate.timeutil import BANGKOK_TZ, days_until
 
 
 VALID_CLIENT = {

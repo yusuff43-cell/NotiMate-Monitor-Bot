@@ -36,7 +36,7 @@ Python, Flask, LINE SDK v3, OpenAI Responses API, gspread, Railway. Целева
 
 ```bash
 python3 -m unittest discover -v -p "test_*.py"
-python3 -m py_compile app.py core.py event_store.py worker.py fixture_support.py deploy/*.py test_*.py
+python3 -m py_compile app.py event_store.py worker.py fixture_support.py deploy/*.py test_*.py notimate/*.py notimate/*/*.py
 ```
 
 `test_fixture_regression.py` прогоняет обезличенные RU/TH/EN-сценарии из `fixtures/real_patterns.json` без сети. Проверка реальной модели на тех же текстовых сценариях — `python deploy/eval_live_fixtures.py` внутри контейнера worker (нужен ключ OpenAI, не входит в CI). GitHub Actions: `.github/workflows/tests.yml`.

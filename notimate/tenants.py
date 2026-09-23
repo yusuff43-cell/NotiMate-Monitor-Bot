@@ -1,11 +1,9 @@
+"""Tenant configuration contract shared by every channel adapter."""
+
 from __future__ import annotations
 
-import datetime as dt
 from collections.abc import Mapping
-from zoneinfo import ZoneInfo
 
-
-BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 SUPPORTED_INPUT_LANGUAGES = ("ru", "th", "en")
 OWNER_OUTPUT_LANGUAGE = "ru"
 REQUIRED_CLIENT_FIELDS = (
@@ -14,25 +12,6 @@ REQUIRED_CLIENT_FIELDS = (
     "owner_line_id",
     "sheet_id",
 )
-
-
-def bangkok_now() -> dt.datetime:
-    return dt.datetime.now(BANGKOK_TZ)
-
-
-def bangkok_date() -> str:
-    return bangkok_now().date().isoformat()
-
-
-def days_until(expiry: str, *, now: dt.datetime | None = None) -> int:
-    """Return calendar days from Bangkok today to an ISO date."""
-    expiry_date = dt.date.fromisoformat(str(expiry).strip()[:10])
-    current = now or bangkok_now()
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=BANGKOK_TZ)
-    else:
-        current = current.astimezone(BANGKOK_TZ)
-    return (expiry_date - current.date()).days
 
 
 def validate_clients(clients: object) -> dict[str, Mapping[str, object]]:
@@ -87,3 +66,7 @@ def client_prompt_context(client_cfg: Mapping[str, object]) -> str:
     if custom_context:
         context += f" Контекст клиента: {custom_context}"
     return context
+
+
+def find_client(clients: Mapping[str, Mapping[str, object]], destination: str):
+    return clients.get(destination)
