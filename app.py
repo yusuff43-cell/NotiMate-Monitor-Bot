@@ -32,6 +32,7 @@ import pytz
 from notimate.tenants import channel_row_to_client_cfg, validate_clients, whatsapp_channel_config
 from notimate.tenant_store import PostgresTenantStore
 from notimate.inbound_store import PostgresInboundStore
+from notimate.projections.operations_store import PostgresOperationsStore
 from event_store import PostgresEventStore
 from logging_utils import get_logger
 
@@ -80,6 +81,17 @@ if whatsapp_inbound_store:
         WHATSAPP_DB_ENABLED = True
     except Exception as exc:
         logger.error('whatsapp_inbound_store_init_failed', extra={'error_type': type(exc).__name__})
+# Business event ledger (Этап 4): dual-write alongside Sheets, additive only — reports
+# still read Sheets until a week of dual-written data can be compared (see docs/21, docs/05).
+operations_store = PostgresOperationsStore(DATABASE_URL) if DATABASE_URL else None
+OPERATIONS_DB_ENABLED = False
+if operations_store:
+    try:
+        operations_store.initialize()
+        OPERATIONS_DB_ENABLED = True
+    except Exception as exc:
+        logger.error('operations_store_init_failed', extra={'error_type': type(exc).__name__})
+
 WHATSAPP_SECRETS = json.loads(os.environ['WHATSAPP_SECRETS_JSON']) if os.environ.get('WHATSAPP_SECRETS_JSON') else {}
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.environ.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN', '')
 # One Meta App secret verifies every tenant's webhook traffic (see whatsapp_channel_config's
@@ -157,6 +169,12 @@ from notimate.processing.ai import (  # noqa: E402
     analyze_text,
     ask_openai,
     openai_usage_values,
+)
+from notimate.projections.operations_store import (  # noqa: E402
+    record_issue_safely,
+    record_operation_safely,
+    record_reminder_safely,
+    record_stock_signal_safely,
 )
 from notimate.projections.sheets import (  # noqa: E402
     EVENT_ID_HEADER,
