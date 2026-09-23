@@ -171,6 +171,29 @@ class DispatchTests(unittest.TestCase):
         process_location_report_event(ROW, CONFIG, inbound('77009990001', 'кто не отчитался', role='owner'))
         self.store.reported_location_ids.assert_called_once()
 
+    def test_owner_slash_summary_command_from_the_picker(self):
+        # WhatsApp's "/" picker just inserts the command text into the message box — it
+        # arrives here as plain text "/summary", not a distinct command payload.
+        self.store.reports_for_date.return_value = []
+        self.store.list_locations.return_value = [{'id': 'loc-1', 'name': 'Точка 1'}]
+        process_location_report_event(ROW, CONFIG, inbound('77009990001', '/summary', role='owner'))
+        self.store.reports_for_date.assert_called_once()
+
+    def test_owner_slash_missing_command_from_the_picker(self):
+        self.store.list_locations.return_value = [{'id': 'loc-1', 'name': 'Точка 1'}]
+        self.store.reported_location_ids.return_value = set()
+        process_location_report_event(ROW, CONFIG, inbound('77009990001', '/missing', role='owner'))
+        self.store.reported_location_ids.assert_called_once()
+
+    def test_owner_slash_help_command(self):
+        process_location_report_event(ROW, CONFIG, inbound('77009990001', '/help', role='owner'))
+        self.assertIn('NotiMate', self.send_text.call_args.args[3])
+        self.store.reports_for_date.assert_not_called()
+
+    def test_owner_bare_help_command(self):
+        process_location_report_event(ROW, CONFIG, inbound('77009990001', 'помощь', role='owner'))
+        self.assertIn('NotiMate', self.send_text.call_args.args[3])
+
     def test_staff_sender_cannot_use_owner_commands(self):
         # A staff member typing "сводка" is not the owner; falls through to report parsing,
         # which then correctly fails to parse it as a report rather than leaking the summary.

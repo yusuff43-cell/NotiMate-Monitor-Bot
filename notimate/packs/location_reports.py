@@ -302,7 +302,22 @@ def format_missing_report(all_locations: list[dict[str, Any]], reported_ids: set
 
 
 OWNER_SUMMARY_COMMANDS = ('сводка', 'свод', 'summary')
-OWNER_MISSING_COMMANDS = ('кто не отчитался', 'не отчитались', 'кто не сдал')
+OWNER_MISSING_COMMANDS = ('кто не отчитался', 'не отчитались', 'кто не сдал', 'missing')
+OWNER_HELP_COMMANDS = ('помощь', 'справка', 'help')
+OWNER_HELP_TEXT = (
+    'NotiMate — отчёты точек.\n\n'
+    '• Напишите цифры за день (выручка, наличные, безнал, остаток) — придёт черновик с кнопками Сохранить/Изменить/Отмена.\n'
+    '• «Сводка» — итоги по всем точкам за сегодня.\n'
+    '• «Кто не отчитался» — список точек без отчёта.\n\n'
+    'В поле ввода наберите «/», чтобы увидеть эти команды списком.'
+)
+
+
+def _normalize_command(text: str) -> str:
+    """WhatsApp's "/" picker just inserts the command text into the message box — it
+    arrives at the webhook as an ordinary text message, e.g. "/summary", not a distinct
+    command payload. Strip the slash so both "сводка" and "/summary" match the same command."""
+    return text.strip().lower().lstrip('/')
 
 
 def process_location_report_event(row: dict[str, Any], config: dict[str, Any], inbound) -> None:
@@ -355,18 +370,21 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
         return
 
     if inbound.sender_role == 'owner':
-        lowered = text.lower()
-        if lowered in OWNER_SUMMARY_COMMANDS:
+        command = _normalize_command(text)
+        if command in OWNER_SUMMARY_COMMANDS:
             today = almaty_date()
             reports = store.reports_for_date(tenant_id, today)
             locations = store.list_locations(tenant_id)
             reply(format_summary(reports, locations, today))
             return
-        if lowered in OWNER_MISSING_COMMANDS:
+        if command in OWNER_MISSING_COMMANDS:
             today = almaty_date()
             locations = store.list_locations(tenant_id)
             reported = store.reported_location_ids(tenant_id, today)
             reply(format_missing_report(locations, reported))
+            return
+        if command in OWNER_HELP_COMMANDS:
+            reply(OWNER_HELP_TEXT)
             return
 
     staff = store.find_staff(tenant_id, inbound.sender_id)
