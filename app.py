@@ -29,7 +29,8 @@ from google.oauth2.service_account import Credentials
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 
-from notimate.tenants import validate_clients
+from notimate.tenants import channel_row_to_client_cfg, validate_clients
+from notimate.tenant_store import PostgresTenantStore
 from event_store import PostgresEventStore
 from logging_utils import get_logger
 
@@ -58,6 +59,15 @@ if event_store:
     except Exception as exc:
         logger.error('database_init_failed', extra={'error_type': type(exc).__name__})
 
+tenant_store = PostgresTenantStore(DATABASE_URL) if DATABASE_URL else None
+TENANTS_DB_ENABLED = False
+if tenant_store:
+    try:
+        tenant_store.initialize()
+        TENANTS_DB_ENABLED = True
+    except Exception as exc:
+        logger.error('tenant_store_init_failed', extra={'error_type': type(exc).__name__})
+
 SHEETS_ENABLED = False
 gc = None
 try:
@@ -71,6 +81,25 @@ except Exception as exc:
 
 
 def find_client(destination: str):
+    """Resolve one LINE destination to a client_cfg.
+
+    Prefers the tenants/tenant_channels tables (Этап 2 of docs/21) once a tenant has been
+    imported there; CLIENTS_JSON is the fallback through Этап 3, and stays the only source
+    for any destination the tenant store doesn't know about or can't validate — so an
+    unmigrated or partially-imported tenant keeps working exactly as before this existed.
+    """
+    if tenant_store is not None and TENANTS_DB_ENABLED:
+        try:
+            row = tenant_store.find_channel('line', destination)
+        except Exception as exc:
+            logger.warning('tenant_lookup_failed', extra={'error_type': type(exc).__name__})
+            row = None
+        if row:
+            secret = CLIENTS.get(row['channel']['secret_ref'])
+            cfg = channel_row_to_client_cfg(row, secret)
+            if cfg:
+                return cfg
+            logger.warning('tenant_channel_config_incomplete')
     return CLIENTS.get(destination)
 
 

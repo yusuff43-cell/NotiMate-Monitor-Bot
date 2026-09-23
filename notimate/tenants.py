@@ -70,3 +70,40 @@ def client_prompt_context(client_cfg: Mapping[str, object]) -> str:
 
 def find_client(clients: Mapping[str, Mapping[str, object]], destination: str):
     return clients.get(destination)
+
+
+def channel_row_to_client_cfg(row: Mapping[str, object], secret: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Build a legacy-shaped ``client_cfg`` from a ``tenant_store.find_channel`` row.
+
+    Every handler still reads ``client_cfg['channel_access_token']`` etc. exactly as when
+    all configuration came from ``CLIENTS_JSON``, so this is the one place that adapts the
+    tenants/tenant_channels row (docs/21 Этап 2) to that unchanged shape. Returns ``None``
+    when ``secret`` doesn't actually hold LINE credentials — the caller falls back to
+    ``CLIENTS_JSON`` rather than serve a half-populated config to production.
+    """
+    if not secret:
+        return None
+    tenant = row['tenant']
+    channel = row['channel']
+    token = secret.get('channel_access_token') if isinstance(secret, Mapping) else None
+    channel_secret = secret.get('channel_secret') if isinstance(secret, Mapping) else None
+    owner_ids = [str(o) for o in (channel.get('owner_ids') or []) if str(o or '').strip()]
+    if not (token and channel_secret and owner_ids and tenant.get('sheet_id')):
+        return None
+    cfg: dict[str, object] = {
+        'channel_access_token': token,
+        'channel_secret': channel_secret,
+        'owner_line_id': owner_ids[0],
+        'sheet_id': tenant['sheet_id'],
+    }
+    if len(owner_ids) > 1:
+        cfg['owner_line_id_2'] = owner_ids[1]
+    if tenant.get('name'):
+        cfg['name'] = tenant['name']
+    if tenant.get('business_type'):
+        cfg['business_type'] = tenant['business_type']
+    if tenant.get('custom_context'):
+        cfg['custom_context'] = tenant['custom_context']
+    if channel.get('allowed_chats') is not None:
+        cfg['allowed_group_ids'] = list(channel['allowed_chats'])
+    return cfg
