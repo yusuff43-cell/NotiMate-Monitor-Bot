@@ -107,3 +107,36 @@ def channel_row_to_client_cfg(row: Mapping[str, object], secret: Mapping[str, ob
     if channel.get('allowed_chats') is not None:
         cfg['allowed_group_ids'] = list(channel['allowed_chats'])
     return cfg
+
+
+def whatsapp_channel_config(row: Mapping[str, object], secret: Mapping[str, object] | None) -> dict[str, object] | None:
+    """Build a WhatsApp-shaped config from a tenant_store row, parallel to
+    ``channel_row_to_client_cfg`` but with WhatsApp's own field names — the two channels'
+    credentials genuinely don't share a shape (Bearer token + phone_number_id here, LINE
+    channel token + secret there), so forcing one function to cover both would just hide
+    that difference behind optional fields. Returns ``None`` when required fields are
+    missing, so the caller can refuse to process rather than guess.
+
+    Only ``access_token`` (per tenant/number) comes from ``secret`` here. The webhook
+    signature's app secret is *not* per-tenant — one Meta App, and therefore one app
+    secret, can front many tenants' WhatsApp numbers, so it is verified once at the route
+    level (``app.WHATSAPP_APP_SECRET``) before any tenant is even resolved, not per-channel.
+    """
+    if not secret:
+        return None
+    tenant = row['tenant']
+    channel = row['channel']
+    access_token = secret.get('access_token') if isinstance(secret, Mapping) else None
+    owner_ids = [str(o) for o in (channel.get('owner_ids') or []) if str(o or '').strip()]
+    if not (access_token and owner_ids):
+        return None
+    return {
+        'access_token': access_token,
+        'phone_number_id': channel['external_id'],
+        'owner_ids': owner_ids,
+        'name': tenant.get('name'),
+        'timezone': tenant.get('timezone'),
+        'sheet_id': tenant.get('sheet_id'),
+        'business_type': tenant.get('business_type'),
+        'custom_context': tenant.get('custom_context'),
+    }

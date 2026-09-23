@@ -8,6 +8,7 @@ import re
 
 import app
 from logging_utils import get_logger
+from notimate.inbound import build_whatsapp_inbound_message
 from notimate.tenants import is_group_allowed
 from notimate.timeutil import bangkok_now
 
@@ -168,3 +169,25 @@ def process_line_event(destination, event):
                 app.notify_owner(client_cfg, msg)
         except Exception as e:
             raise RuntimeError(f"Image handler error: {e}") from e
+
+
+def process_whatsapp_event(phone_number_id, message):
+    """Process one inbound WhatsApp message claimed by the durable worker.
+
+    Этап 3 MVP per docs/21: proves the adapter → inbound_events → worker → reply loop
+    works end to end for a real WhatsApp number. Real business logic (drafts, «Отчёты
+    точек») is Этап 6 — this only acknowledges receipt so far.
+    """
+    row = app.find_whatsapp_channel(phone_number_id)
+    if not row:
+        raise ValueError(f"Unknown WhatsApp phone_number_id: {phone_number_id}")
+    config = app.whatsapp_channel_config(row, app.WHATSAPP_SECRETS.get(row['channel']['secret_ref']))
+    if not config:
+        raise RuntimeError('WhatsApp channel config is incomplete')
+    inbound = build_whatsapp_inbound_message(row, message)
+    if not inbound.text:
+        return
+    app.whatsapp_send_text(
+        config['access_token'], config['phone_number_id'], inbound.sender_id,
+        f"Получено: {inbound.text}",
+    )

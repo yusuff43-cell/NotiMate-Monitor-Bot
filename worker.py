@@ -41,7 +41,14 @@ def main() -> None:
     store.initialize()
 
     os.environ['DISABLE_SCHEDULER'] = '1'
-    from app import process_line_event
+    import app
+    from app import process_line_event, process_whatsapp_event
+
+    # WhatsApp reuses run_once against its own inbound_events queue (notimate/inbound_store.py)
+    # so the LINE claim/process/retry loop above stays completely unchanged; app.py already
+    # constructed and initialized whatsapp_inbound_store, or left it None if DATABASE_URL
+    # somehow disappeared between the two initializations (it can't in practice — same env).
+    whatsapp_store = app.whatsapp_inbound_store
 
     logger.info('worker_started')
     next_retention_cleanup = 0.0
@@ -58,8 +65,16 @@ def main() -> None:
                 )
             except Exception as exc:
                 logger.warning('retention_cleanup_failed', extra={'error_type': type(exc).__name__})
+            if whatsapp_store:
+                try:
+                    whatsapp_store.purge_expired_event_data(RAW_EVENT_RETENTION_DAYS, EVENT_LEDGER_RETENTION_DAYS)
+                except Exception as exc:
+                    logger.warning('whatsapp_retention_cleanup_failed', extra={'error_type': type(exc).__name__})
             next_retention_cleanup = now + RETENTION_CLEANUP_SECONDS
-        if not run_once(store, process_line_event):
+        processed = run_once(store, process_line_event)
+        if whatsapp_store and run_once(whatsapp_store, process_whatsapp_event):
+            processed = True
+        if not processed:
             time.sleep(POLL_SECONDS)
 
 

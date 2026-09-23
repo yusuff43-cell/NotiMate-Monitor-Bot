@@ -29,8 +29,9 @@ from google.oauth2.service_account import Credentials
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 
-from notimate.tenants import channel_row_to_client_cfg, validate_clients
+from notimate.tenants import channel_row_to_client_cfg, validate_clients, whatsapp_channel_config
 from notimate.tenant_store import PostgresTenantStore
+from notimate.inbound_store import PostgresInboundStore
 from event_store import PostgresEventStore
 from logging_utils import get_logger
 
@@ -68,6 +69,23 @@ if tenant_store:
     except Exception as exc:
         logger.error('tenant_store_init_failed', extra={'error_type': type(exc).__name__})
 
+# WhatsApp Cloud API (Этап 3): credentials bridge, parallel to how CLIENTS_JSON holds LINE
+# secrets today. Keyed by an arbitrary secret_ref (tenant_channels.secret_ref), not by
+# phone_number_id, so one tenant's ref name stays stable even if its number changes.
+whatsapp_inbound_store = PostgresInboundStore(DATABASE_URL, 'whatsapp') if DATABASE_URL else None
+WHATSAPP_DB_ENABLED = False
+if whatsapp_inbound_store:
+    try:
+        whatsapp_inbound_store.initialize()
+        WHATSAPP_DB_ENABLED = True
+    except Exception as exc:
+        logger.error('whatsapp_inbound_store_init_failed', extra={'error_type': type(exc).__name__})
+WHATSAPP_SECRETS = json.loads(os.environ['WHATSAPP_SECRETS_JSON']) if os.environ.get('WHATSAPP_SECRETS_JSON') else {}
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.environ.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN', '')
+# One Meta App secret verifies every tenant's webhook traffic (see whatsapp_channel_config's
+# docstring) — this is the App Secret from Meta App Dashboard, not any one WABA's token.
+WHATSAPP_APP_SECRET = os.environ.get('WHATSAPP_APP_SECRET', '')
+
 SHEETS_ENABLED = False
 gc = None
 try:
@@ -103,6 +121,21 @@ def find_client(destination: str):
     return CLIENTS.get(destination)
 
 
+def find_whatsapp_channel(phone_number_id: str):
+    """Resolve one WhatsApp phone_number_id to its tenant_store row, or None.
+
+    Unlike find_client, there is no CLIENTS_JSON fallback here — WhatsApp tenants exist
+    only in tenants/tenant_channels, so an unresolvable phone_number_id is simply unknown.
+    """
+    if tenant_store is None or not TENANTS_DB_ENABLED:
+        return None
+    try:
+        return tenant_store.find_channel('whatsapp', phone_number_id)
+    except Exception as exc:
+        logger.warning('tenant_lookup_failed', extra={'error_type': type(exc).__name__})
+        return None
+
+
 # ── Модули NotiMate Core ────────────────────────────────────────
 # Every name below is re-exported on this module so tests and deploy/ scripts keep
 # addressing them as `app.<name>`, exactly as when they all lived in this one file.
@@ -112,6 +145,12 @@ from notimate.channels.line import (  # noqa: E402
     get_line_clients,
     notify_owner,
     verify_signature,
+)
+from notimate.channels.whatsapp import (  # noqa: E402
+    extract_messages as whatsapp_extract_messages,
+    send_text as whatsapp_send_text,
+    verify_signature as whatsapp_verify_signature,
+    verify_webhook_challenge as whatsapp_verify_webhook_challenge,
 )
 from notimate.processing.ai import (  # noqa: E402
     analyze_image,
@@ -145,7 +184,7 @@ from notimate.reports.summaries import (  # noqa: E402
     reminders_report,
     weekly_report,
 )
-from notimate.pipeline import process_line_event  # noqa: E402
+from notimate.pipeline import process_line_event, process_whatsapp_event  # noqa: E402
 
 
 @app.route("/webhook", methods=['POST'])
@@ -182,6 +221,49 @@ def webhook():
 
     logger.info('events_registered', extra={'accepted': accepted, 'duplicates': duplicates})
     return 'OK'
+
+
+@app.route("/webhook/whatsapp", methods=['GET'])
+def whatsapp_webhook_verify():
+    challenge = whatsapp_verify_webhook_challenge(
+        WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+        request.args.get('hub.mode', ''),
+        request.args.get('hub.verify_token', ''),
+        request.args.get('hub.challenge', ''),
+    )
+    if challenge is None:
+        abort(403)
+    return challenge, 200
+
+
+@app.route("/webhook/whatsapp", methods=['POST'])
+def whatsapp_webhook():
+    body = request.get_data()
+    signature = request.headers.get('X-Hub-Signature-256', '')
+    if not (WHATSAPP_APP_SECRET and whatsapp_verify_signature(WHATSAPP_APP_SECRET, body, signature)):
+        abort(403)
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        abort(400)
+
+    if not whatsapp_inbound_store or not WHATSAPP_DB_ENABLED:
+        return {'status': 'database_unavailable'}, 503
+
+    accepted_total = duplicates_total = 0
+    for item in whatsapp_extract_messages(payload):
+        try:
+            accepted, duplicates = whatsapp_inbound_store.register_events(item['phone_number_id'], [item['message']])
+        except Exception as exc:
+            logger.error('whatsapp_event_registration_failed', extra={'error_type': type(exc).__name__})
+            continue
+        accepted_total += accepted
+        duplicates_total += duplicates
+
+    logger.info('whatsapp_events_registered', extra={'accepted': accepted_total, 'duplicates': duplicates_total})
+    return 'OK'
+
 
 @app.route("/health", methods=['GET'])
 def health():
