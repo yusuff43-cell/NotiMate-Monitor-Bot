@@ -2,7 +2,7 @@
 """Review and decide WhatsApp access requests (run by the developer).
 
     docker compose -f compose.vps.yml exec -T worker python deploy/access_requests.py list
-    docker compose -f compose.vps.yml exec -T worker python deploy/access_requests.py approve 7 --role staff
+    docker compose -f compose.vps.yml exec -T worker python deploy/access_requests.py approve 7 --role staff --tenant erzhan-cafe   # shared number: name the business
     docker compose -f compose.vps.yml exec -T worker python deploy/access_requests.py approve 8 --role staff --location erzhan-loc-1 --name "Аня"
     docker compose -f compose.vps.yml exec -T worker python deploy/access_requests.py approve 9 --role accountant
     docker compose -f compose.vps.yml exec -T worker python deploy/access_requests.py reject 10
@@ -38,6 +38,10 @@ def notify(tenant_store, request, text: str) -> bool:
     secrets = json.loads(os.environ.get('WHATSAPP_SECRETS_JSON') or '{}')
     config = whatsapp_channel_config(row, secrets.get(row['channel']['secret_ref'])) if row else None
     if not config:
+        shared = tenant_store.shared_number(request['routing_key'])
+        token = (secrets.get(shared['secret_ref']) or {}).get('access_token') if shared else None
+        config = {'access_token': token, 'phone_number_id': request['routing_key']} if token else None
+    if not config:
         return False
     try:
         send_text(config['access_token'], config['phone_number_id'], request['sender_id'], text)
@@ -54,6 +58,7 @@ def main() -> int:
     approve = sub.add_parser('approve')
     approve.add_argument('id', type=int)
     approve.add_argument('--role', choices=ROLES, default='staff')
+    approve.add_argument('--tenant', help='Business id — required on a shared number (see «клиенты» / list)')
     approve.add_argument('--location')
     approve.add_argument('--name', default='')
     reject = sub.add_parser('reject')
@@ -74,7 +79,8 @@ def main() -> int:
             print('No pending requests.')
         for req in pending:
             row = tenants.find_channel(req['channel'], req['routing_key'])
-            tenant = (row['tenant'].get('name') or row['tenant']['id']) if row else f"(unknown number {req['routing_key']})"
+            shared = tenants.shared_number(req['routing_key']) if not row else None
+            tenant = (row['tenant'].get('name') or row['tenant']['id']) if row else ('(общий номер — укажите --tenant)' if shared else f"(unknown number {req['routing_key']})")
             print(f"#{req['id']}  {tenant}  +{req['sender_id']}  {req['created_at']:%Y-%m-%d %H:%M}  «{req['message']}»")
         return 0
 
@@ -90,7 +96,7 @@ def main() -> int:
     reports = PostgresLocationReportsStore(database_url)
     reports.initialize()
     try:
-        result = apply_approval(tenants, reports, request, args.role, location_id=args.location, name=args.name)
+        result = apply_approval(tenants, reports, request, args.role, location_id=args.location, name=args.name, tenant_id=args.tenant)
     except ValueError as exc:
         sys.exit(f'Cannot approve: {exc}')
     access.decide(args.id, 'approved', result['tenant_id'], args.role)

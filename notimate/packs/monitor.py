@@ -95,6 +95,7 @@ def process_monitor_event(row: dict[str, Any], config: dict[str, Any], inbound) 
         return
 
     cfg = build_cfg(row, config, notify_owners)
+    label = f" ({tenant.get('name')})" if row['channel'].get('shared') and tenant.get('name') else ''
     text = inbound.text.strip()
     media = [m for m in getattr(inbound, 'media', ()) if m.get('kind') in ('image', 'pdf')]
 
@@ -133,7 +134,7 @@ def process_monitor_event(row: dict[str, Any], config: dict[str, Any], inbound) 
             return
         status = pipeline.handle_text(tenant_id, cfg, inbound.external_event_id, text)
         if status != 'ignored':
-            reply('✅ Принято, записал в таблицу.')
+            reply('✅ Принято, записал в таблицу.' + label)
         return
 
     try:
@@ -164,4 +165,4 @@ def process_monitor_event(row: dict[str, Any], config: dict[str, Any], inbound) 
     if status == 'ignored' and not doc_line:
         reply('Не вижу на фото финансового документа (чек, накладная, отчёт смены). Пришлите документ целиком.')
     else:
-        reply('✅ Принято, записал в таблицу.' + doc_line)
+        reply('✅ Принято, записал в таблицу.' + label + doc_line)

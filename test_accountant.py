@@ -293,6 +293,7 @@ class DispatchTests(unittest.TestCase):
         self.orig = (app_module.documents_store, app_module.DOCUMENTS_DB_ENABLED)
         self.addCleanup(lambda: (setattr(app_module, 'documents_store', self.orig[0]), setattr(app_module, 'DOCUMENTS_DB_ENABLED', self.orig[1])))
         self.store = Mock()
+        self.store.get_document.return_value = None
         app_module.documents_store = self.store
         app_module.DOCUMENTS_DB_ENABLED = True
         self.send_text = patch.object(app_module, 'whatsapp_send_text').start()
@@ -349,6 +350,16 @@ class DispatchTests(unittest.TestCase):
         self.store.confirm_document.side_effect = DocumentAlreadyFinalized('again')
         flow.process_accountant_event(ROW, CONFIG, inbound('doc:confirm:9'))
         self.assertIn('уже обработан', self.last_text())
+
+    def test_document_button_of_another_sender_or_tenant_is_refused(self):
+        for doc in ({'tenant_id': 'aspan', 'sender_id': 'someone-else'}, {'tenant_id': 'other', 'sender_id': 'staff1'}):
+            self.store.get_document.return_value = doc
+            for button in ('doc:confirm:9', 'doc:cancel:9', 'doc:edit:9'):
+                self.send_text.reset_mock()
+                flow.process_accountant_event(ROW, CONFIG, inbound(button))
+                self.assertIn('не ваш', self.last_text())
+        self.store.confirm_document.assert_not_called()
+        self.store.reject_document.assert_not_called()
 
     def test_cancel_and_edit_buttons_reject_the_draft(self):
         flow.process_accountant_event(ROW, CONFIG, inbound('doc:cancel:9'))

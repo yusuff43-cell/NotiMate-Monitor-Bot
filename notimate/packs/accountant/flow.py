@@ -234,6 +234,10 @@ def process_accountant_event(row: dict[str, Any], config: dict[str, Any], inboun
                 document_id = int(text[len(prefix):])
             except ValueError:
                 return
+            guard = store.get_document(document_id)
+            if guard is not None and (guard.get('tenant_id') != tenant_id or guard.get('sender_id') != inbound.sender_id):
+                reply('Это не ваш документ — действие отклонено.')
+                return
             try:
                 if prefix == 'doc:confirm:':
                     confirmed = store.confirm_document(document_id, inbound.sender_id)

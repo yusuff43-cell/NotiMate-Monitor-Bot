@@ -84,11 +84,29 @@ class DispatchTests(unittest.TestCase):
         self.addCleanup(setattr, app_module, 'location_reports_store', self.original_store)
         self.addCleanup(setattr, app_module, 'LOCATION_REPORTS_DB_ENABLED', self.original_enabled)
         self.store = Mock()
+        self.store.get_draft.return_value = None  # ownership guard: unknown draft falls through to the KeyError path
         app_module.location_reports_store = self.store
         app_module.LOCATION_REPORTS_DB_ENABLED = True
         self.send_text = patch.object(app_module, 'whatsapp_send_text').start()
         self.send_buttons = patch.object(app_module, 'whatsapp_send_interactive_buttons').start()
         self.addCleanup(patch.stopall)
+
+    def test_button_of_another_sender_or_tenant_is_refused(self):
+        for draft in ({'tenant_id': 'erzhan-3biz', 'sender_id': 'someone-else'}, {'tenant_id': 'other-tenant', 'sender_id': '77001112233'}):
+            self.store.get_draft.return_value = draft
+            for button in ('report:confirm:abc', 'report:cancel:abc', 'report:edit:abc'):
+                self.send_text.reset_mock()
+                process_location_report_event(ROW, CONFIG, inbound('77001112233', button))
+                self.assertIn('не ваш', self.send_text.call_args.args[3])
+        self.store.confirm_draft.assert_not_called()
+        self.store.cancel_draft.assert_not_called()
+
+    def test_button_of_the_owner_of_the_draft_passes_the_guard(self):
+        self.store.get_draft.return_value = {'tenant_id': 'erzhan-3biz', 'sender_id': '77001112233'}
+        self.store.confirm_draft.return_value = {'sender_id': '77001112233', 'location_id': 'loc-1'}
+        self.store.find_staff.return_value = {'location_name': 'Точка 1'}
+        process_location_report_event(ROW, CONFIG, inbound('77001112233', 'report:confirm:abc'))
+        self.store.confirm_draft.assert_called_once_with('abc')
 
     def test_module_disabled_replies_unavailable(self):
         app_module.LOCATION_REPORTS_DB_ENABLED = False

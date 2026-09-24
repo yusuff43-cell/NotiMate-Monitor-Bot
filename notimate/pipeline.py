@@ -266,7 +266,13 @@ def process_whatsapp_event(phone_number_id, message):
     """
     row = app.find_whatsapp_channel(phone_number_id)
     if not row:
-        raise ValueError(f"Unknown WhatsApp phone_number_id: {phone_number_id}")
+        # Not a dedicated number: it may be a shared one, where the SENDER decides the business.
+        from notimate.shared_number import resolve_shared
+        row, outcome = resolve_shared(phone_number_id, message)
+        if outcome == 'handled':
+            return
+        if not row:
+            raise ValueError(f"Unknown WhatsApp phone_number_id: {phone_number_id}")
     config = app.whatsapp_channel_config(row, app.WHATSAPP_SECRETS.get(row['channel']['secret_ref']))
     if not config:
         raise RuntimeError('WhatsApp channel config is incomplete')

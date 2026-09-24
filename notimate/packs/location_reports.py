@@ -396,6 +396,15 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
         reply('Модуль отчётов временно недоступен.')
         return
 
+    if text.startswith(('report:edit:', 'report:confirm:', 'report:cancel:')):
+        # A button id is only an id: whoever sends it must be the person the draft belongs to,
+        # in this business. Anything else (guessed/forwarded id, another tenant) is refused.
+        guard_id = text.split(':', 2)[2]
+        guard = store.get_draft(guard_id)
+        if guard is not None and (guard.get('tenant_id') != tenant_id or guard.get('sender_id') != inbound.sender_id):
+            reply('Это не ваш отчёт — действие отклонено.')
+            return
+
     if text.startswith('report:edit:'):
         draft_id = text.split(':', 2)[2]
         try:

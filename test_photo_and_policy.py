@@ -213,6 +213,7 @@ class LocationSheetTests(unittest.TestCase):
         self.addCleanup(lambda: (setattr(app_module, 'location_reports_store', self.orig[0]), setattr(app_module, 'LOCATION_REPORTS_DB_ENABLED', self.orig[1])))
         self.store = Mock()
         self.store.find_staff.return_value = {'location_id': 'loc-1', 'location_name': 'Точка 1', 'name': 'Аня'}
+        self.store.get_draft.return_value = None
         app_module.location_reports_store = self.store
         app_module.LOCATION_REPORTS_DB_ENABLED = True
         patch.object(app_module, 'whatsapp_send_text').start()

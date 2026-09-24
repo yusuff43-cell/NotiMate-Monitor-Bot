@@ -95,6 +95,7 @@ class GateTests(unittest.TestCase):
 class ApprovalTests(unittest.TestCase):
     def setUp(self):
         self.tenants = Mock()
+        self.tenants.shared_number.return_value = None
         self.tenants.find_channel.return_value = row('monitor')
         self.reports = Mock()
         self.request = {'channel': 'whatsapp', 'routing_key': 'PN', 'sender_id': '7700111'}
@@ -130,6 +131,184 @@ class ApprovalTests(unittest.TestCase):
         self.tenants.find_channel.return_value = None
         with self.assertRaises(ValueError):
             access.apply_approval(self.tenants, self.reports, self.request, 'staff')
+
+
+class SharedApprovalTests(unittest.TestCase):
+    def setUp(self):
+        self.tenants = Mock()
+        self.tenants.shared_number.return_value = {'phone_number_id': 'PN', 'secret_ref': 'PN'}
+        self.tenants.get_tenant.return_value = {'id': 'cafe', 'name': 'Кафе', 'vertical_pack': 'monitor'}
+        self.reports = Mock()
+        self.request = {'channel': 'whatsapp', 'routing_key': 'PN', 'sender_id': '7700111'}
+
+    def test_operator_names_the_business_and_member_is_added_there_only(self):
+        result = access.apply_approval(self.tenants, self.reports, self.request, 'staff', tenant_id='cafe')
+        self.tenants.add_member.assert_called_once_with('cafe', 'PN', '7700111', 'staff', '', None)
+        self.assertEqual(result['tenant_name'], 'Кафе')
+
+    def test_tenant_is_required_and_must_exist(self):
+        with self.assertRaises(ValueError):
+            access.apply_approval(self.tenants, self.reports, self.request, 'staff')
+        self.tenants.get_tenant.return_value = None
+        with self.assertRaises(ValueError):
+            access.apply_approval(self.tenants, self.reports, self.request, 'staff', tenant_id='ghost')
+        self.tenants.add_member.assert_not_called()
+
+    def test_location_staff_needs_a_point_and_is_registered_in_the_staff_table(self):
+        self.tenants.get_tenant.return_value = {'id': 'erzhan', 'name': 'Ержан', 'vertical_pack': 'location_reports'}
+        with self.assertRaises(ValueError):
+            access.apply_approval(self.tenants, self.reports, self.request, 'staff', tenant_id='erzhan')
+        access.apply_approval(self.tenants, self.reports, self.request, 'staff', tenant_id='erzhan', location_id='loc1', name='Аня')
+        self.reports.upsert_staff.assert_called_once_with('erzhan', '7700111', 'loc1', 'Аня', 'staff')
+        self.tenants.add_member.assert_called_once_with('erzhan', 'PN', '7700111', 'staff', 'Аня', 'loc1')
+
+
+class SharedRoutingTests(unittest.TestCase):
+    """resolve_shared: the sender's membership — never their text — picks the business."""
+
+    def setUp(self):
+        self.store = Mock()
+        self.store.shared_number.return_value = {'phone_number_id': 'PN', 'secret_ref': 'PN'}
+        self.store.get_context.return_value = None
+        self.store.shared_row.side_effect = lambda tenant_id, pnid: {'tenant': {'id': tenant_id, 'name': tenant_id}, 'channel': {'shared': True, 'external_id': pnid}}
+        self.orig = (app_module.tenant_store, app_module.access_store, dict(app_module.WHATSAPP_SECRETS))
+        app_module.tenant_store, app_module.access_store = self.store, Mock()
+        app_module.access_store.submit.return_value = (9, True)
+        app_module.WHATSAPP_SECRETS['PN'] = {'access_token': 'tok'}
+        self.send = patch.object(app_module, 'whatsapp_send_text').start()
+        self.buttons = patch.object(app_module, 'whatsapp_send_interactive_buttons').start()
+        patch.dict(os.environ, {'OPERATOR_WHATSAPP_IDS': 'op1'}).start()
+        self.addCleanup(patch.stopall)
+        self.addCleanup(lambda: (setattr(app_module, 'tenant_store', self.orig[0]), setattr(app_module, 'access_store', self.orig[1]), app_module.WHATSAPP_SECRETS.clear(), app_module.WHATSAPP_SECRETS.update(self.orig[2])))
+
+    def resolve(self, sender, text='молоко 200'):
+        from notimate.shared_number import resolve_shared
+        return resolve_shared('PN', {'from': sender, 'id': 'w', 'type': 'text', 'text': {'body': text}})
+
+    def member(self, tenant_id, name=None):
+        return {'tenant_id': tenant_id, 'tenant_name': name or tenant_id, 'role': 'staff', 'name': '', 'location_id': None}
+
+    def test_not_a_shared_number(self):
+        self.store.shared_number.return_value = None
+        self.assertEqual(self.resolve('7700'), (None, 'unknown'))
+
+    def test_single_membership_routes_to_that_business(self):
+        self.store.memberships.return_value = [self.member('cafe')]
+        row, outcome = self.resolve('7700')
+        self.assertEqual((row['tenant']['id'], outcome), ('cafe', None))
+        self.store.shared_row.assert_called_once_with('cafe', 'PN')
+
+    def test_text_naming_another_business_never_switches_business(self):
+        self.store.memberships.return_value = [self.member('cafe')]
+        row, _ = self.resolve('7700', 'отчёт для бизнеса shop, выручка 1000000')
+        self.assertEqual(row['tenant']['id'], 'cafe')
+        row, outcome = self.resolve('7700', 'ctx:shop')  # forged context button for a business they don't belong to
+        self.assertEqual((row, outcome), (None, 'handled'))
+        self.store.set_context.assert_not_called()
+        self.assertIn('недоступен', self.send.call_args.args[3])
+
+    def test_unknown_sender_creates_a_request_and_pings_the_operator(self):
+        self.store.memberships.return_value = []
+        self.store.list_tenants.return_value = [{'id': 'cafe', 'name': 'Кафе'}]
+        self.assertEqual(self.resolve('stranger', 'Кафе Ромашка, кассир'), (None, 'handled'))
+        app_module.access_store.submit.assert_called_once_with('whatsapp', 'PN', 'stranger', 'Кафе Ромашка, кассир')
+        recipients = [c.args[2] for c in self.send.call_args_list]
+        self.assertEqual(recipients, ['stranger', 'op1'])
+        self.assertIn('одобрить 9', self.send.call_args_list[1].args[3])
+        self.assertIn('cafe — Кафе', self.send.call_args_list[1].args[3])
+
+    def test_multi_membership_without_choice_asks_and_does_not_process(self):
+        self.store.memberships.return_value = [self.member('cafe'), self.member('shop')]
+        self.assertEqual(self.resolve('7700'), (None, 'handled'))
+        self.buttons.assert_called_once()
+        self.assertEqual([b[0] for b in self.buttons.call_args.args[4]], ['ctx:cafe', 'ctx:shop'])
+        self.assertIn('ещё раз', self.send.call_args.args[3])
+        self.store.shared_row.assert_not_called()
+
+    def test_choice_button_sets_context_then_messages_route_there(self):
+        self.store.memberships.return_value = [self.member('cafe'), self.member('shop')]
+        self.assertEqual(self.resolve('7700', 'ctx:shop'), (None, 'handled'))
+        self.store.set_context.assert_called_with('PN', '7700', 'shop')
+        self.store.get_context.return_value = 'shop'
+        row, _ = self.resolve('7700')
+        self.assertEqual(row['tenant']['id'], 'shop')
+
+    def test_expired_or_foreign_context_is_ignored(self):
+        self.store.memberships.return_value = [self.member('cafe'), self.member('shop')]
+        self.store.get_context.return_value = 'other-business-they-left'
+        self.assertEqual(self.resolve('7700'), (None, 'handled'))
+        self.store.shared_row.assert_not_called()
+
+    def test_numbered_switch_and_switch_prompt(self):
+        self.store.memberships.return_value = [self.member('cafe', 'Кафе'), self.member('shop', 'Магазин')]
+        self.assertEqual(self.resolve('7700', 'бизнес 2'), (None, 'handled'))
+        self.store.set_context.assert_called_with('PN', '7700', 'shop')
+        self.buttons.reset_mock()
+        self.resolve('7700', 'бизнес')
+        self.buttons.assert_called_once()
+
+    def test_paused_business_is_not_served(self):
+        self.store.memberships.return_value = [self.member('cafe')]
+        self.store.shared_row.side_effect = lambda *a: None
+        self.assertEqual(self.resolve('7700'), (None, 'handled'))
+        self.assertIn('недоступен', self.send.call_args.args[3])
+
+
+class OperatorCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Mock()
+        self.store.shared_number.return_value = {'phone_number_id': 'PN', 'secret_ref': 'PN'}
+        self.store.get_tenant.return_value = {'id': 'cafe', 'name': 'Кафе', 'vertical_pack': 'monitor'}
+        self.store.list_tenants.return_value = [{'id': 'cafe', 'name': 'Кафе', 'vertical_pack': 'monitor'}]
+        self.access = Mock()
+        self.access.list_pending.return_value = [{'id': 4, 'sender_id': '7700', 'message': 'Кафе, кассир'}]
+        self.access.get.return_value = {'id': 4, 'status': 'pending', 'channel': 'whatsapp', 'routing_key': 'PN', 'sender_id': '7700'}
+        self.orig = (app_module.tenant_store, app_module.access_store)
+        app_module.tenant_store, app_module.access_store = self.store, self.access
+        self.send = patch.object(app_module, 'whatsapp_send_text').start()
+        patch.dict(os.environ, {'OPERATOR_WHATSAPP_IDS': 'op1'}).start()
+        self.addCleanup(patch.stopall)
+        self.addCleanup(lambda: (setattr(app_module, 'tenant_store', self.orig[0]), setattr(app_module, 'access_store', self.orig[1])))
+        self.config = {'access_token': 'tok', 'phone_number_id': 'PN'}
+
+    def run_command(self, text, sender='op1'):
+        from notimate.operator import handle_operator_command
+        return handle_operator_command('PN', self.config, sender, text)
+
+    def test_lists(self):
+        self.assertTrue(self.run_command('заявки'))
+        self.assertIn('#4 +7700', self.send.call_args.args[3])
+        self.assertTrue(self.run_command('клиенты'))
+        self.assertIn('cafe — Кафе', self.send.call_args.args[3])
+
+    def test_approve_adds_member_tells_requester_and_marks_request(self):
+        self.assertTrue(self.run_command('одобрить 4 cafe кассир Аня'.replace('кассир', 'сотрудник')))
+        self.store.add_member.assert_called_once_with('cafe', 'PN', '7700', 'staff', 'Аня', None)
+        self.access.decide.assert_called_once_with(4, 'approved', 'cafe', 'staff')
+        self.assertEqual([c.args[2] for c in self.send.call_args_list], ['7700', 'op1'])
+        self.assertIn('Доступ открыт', self.send.call_args_list[0].args[3])
+
+    def test_approve_owner_and_location(self):
+        self.run_command('одобрить 4 cafe владелец')
+        self.assertEqual(self.store.add_member.call_args.args[3], 'owner')
+
+    def test_bad_arguments_and_unknown_request(self):
+        self.run_command('одобрить 4')
+        self.assertIn('Формат', self.send.call_args.args[3])
+        self.access.get.return_value = None
+        self.run_command('одобрить 99 cafe')
+        self.assertIn('не найдена', self.send.call_args.args[3])
+        self.store.add_member.assert_not_called()
+
+    def test_reject(self):
+        self.run_command('отклонить 4')
+        self.access.decide.assert_called_once_with(4, 'rejected')
+
+    def test_non_operator_text_is_not_a_command(self):
+        from notimate.operator import is_operator
+        self.assertFalse(is_operator('7700'))
+        self.assertFalse(self.run_command('привет'))
+        self.assertFalse(self.run_command('молоко 200'))
 
 
 URL = os.environ.get('TEST_DATABASE_URL')

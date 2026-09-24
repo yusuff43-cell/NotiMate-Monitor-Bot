@@ -143,11 +143,14 @@ def request_access(row: Mapping[str, Any], config: Mapping[str, Any], inbound) -
             logger.warning('access_operator_notify_failed', extra={'error_type': type(exc).__name__})
 
 
-def apply_approval(tenant_store, reports_store, request: Mapping[str, Any], role: str, *, location_id: str | None = None, name: str = '') -> dict[str, Any]:
+def apply_approval(tenant_store, reports_store, request: Mapping[str, Any], role: str, *, location_id: str | None = None, name: str = '', tenant_id: str | None = None) -> dict[str, Any]:
     """Add the requester to the right list for the tenant that owns the request's number.
     Returns ``{'tenant_id', 'tenant_name', 'role'}``; raises ``ValueError`` on bad input."""
     if role not in ROLES:
         raise ValueError(f'role must be one of {", ".join(ROLES)}')
+    shared = tenant_store.shared_number(request['routing_key']) if request['channel'] == 'whatsapp' else None
+    if shared:
+        return _approve_on_shared_number(tenant_store, reports_store, request, role, tenant_id, location_id, name)
     row = tenant_store.find_channel(request['channel'], request['routing_key'])
     if not row:
         raise ValueError('The number this request came to is not connected to any active tenant')
@@ -173,3 +176,52 @@ def apply_approval(tenant_store, reports_store, request: Mapping[str, Any], role
             reports_store.upsert_staff(tenant['id'], sender, location_id, name, 'staff')
         tenant_store.add_channel_member(request['channel'], request['routing_key'], 'allowed_chats', sender)
     return {'tenant_id': tenant['id'], 'tenant_name': tenant.get('name') or tenant['id'], 'role': role}
+
+
+def _approve_on_shared_number(tenant_store, reports_store, request, role, tenant_id, location_id, name) -> dict[str, Any]:
+    """On a shared number the operator names the business explicitly; the requester is then
+    added to that business only (``tenant_members``)."""
+    if not tenant_id:
+        raise ValueError('На общем номере нужно указать id клиента (команда «клиенты» покажет список)')
+    tenant = tenant_store.get_tenant(tenant_id)
+    if not tenant:
+        raise ValueError(f'Клиент «{tenant_id}» не найден или неактивен')
+    if role == 'staff' and tenant.get('vertical_pack') == 'location_reports':
+        if not location_id:
+            raise ValueError('«Отчёты точек»: укажите точку — «точка:<id>»')
+        reports_store.upsert_staff(tenant_id, request['sender_id'], location_id, name, 'staff')
+    tenant_store.add_member(tenant_id, request['routing_key'], request['sender_id'], role, name, location_id)
+    return {'tenant_id': tenant_id, 'tenant_name': tenant.get('name') or tenant_id, 'role': role}
+
+
+def request_access_shared(phone_number_id: str, config: Mapping[str, Any], sender_id: str, text: str) -> None:
+    """Unknown number on a shared bot number: store a request (no business is chosen yet),
+    answer the sender, and tell the operator how to approve (first message only)."""
+    import app
+    from logging_utils import get_logger
+
+    logger = get_logger()
+    store = getattr(app, 'access_store', None)
+    token = config['access_token']
+    is_new, request_id = True, None
+    if store is not None:
+        try:
+            request_id, is_new = store.submit('whatsapp', phone_number_id, sender_id, text)
+        except Exception as exc:
+            logger.warning('access_request_store_failed', extra={'error_type': type(exc).__name__})
+    app.whatsapp_send_text(token, phone_number_id, sender_id, WAIT_TEXT if is_new else 'Заявка ждёт подтверждения — ответим, как только доступ откроют.')
+    if not is_new:
+        return
+    listing = ''
+    try:
+        listing = '\n'.join(f"• {t['id']} — {t['name']}" for t in app.tenant_store.list_tenants()[:12])
+    except Exception:
+        pass
+    for operator in [o.strip() for o in os.environ.get('OPERATOR_WHATSAPP_IDS', '').split(',') if o.strip()]:
+        try:
+            app.whatsapp_send_text(
+                token, phone_number_id, operator,
+                f"🆕 Заявка #{request_id}: +{sender_id}\n«{text[:200]}»\nОдобрить: одобрить {request_id} <id клиента> [сотрудник|владелец|бухгалтер]\n\nКлиенты:\n{listing}",
+            )
+        except Exception as exc:
+            logger.warning('access_operator_notify_failed', extra={'error_type': type(exc).__name__})
