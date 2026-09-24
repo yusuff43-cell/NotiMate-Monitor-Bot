@@ -183,6 +183,12 @@ class SheetsSyncPostgresTests(unittest.TestCase):
         again = self.sync({'Расходы': FakeWorksheet(self.expense_rows()), 'Остатки': FakeWorksheet([{'Дата': '2026-09-20', 'Продукт': 'Сыр', 'Холодильник': 2, 'Примечание': 'Low stock'}])})
         self.assertEqual((again['inserted'], again['updated'], again['removed']), (0, 0, 0))
 
+    def test_numeric_looking_text_does_not_cause_endless_updates(self):
+        rows = [{'Дата': '2026-09-20', 'Поставщик/Магазин': 'S', 'Позиция': 460, 'Сумма (THB)': 460}]
+        self.sync({'Расходы': FakeWorksheet(rows)})
+        again = self.sync({'Расходы': FakeWorksheet(rows)})
+        self.assertEqual((again['inserted'], again['updated'], again['removed']), (0, 0, 0))
+
     def test_manual_edit_of_an_event_keyed_row_updates_it_in_place(self):
         self.sync({'Расходы': FakeWorksheet(self.expense_rows())})
         edited = self.expense_rows()

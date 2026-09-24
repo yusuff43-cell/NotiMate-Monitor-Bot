@@ -53,6 +53,11 @@ def parse_date(value) -> str | None:
         return None
 
 
+def _s(value) -> str:
+    """Sheets returns hand-typed numbers as numbers («460»); text columns are always compared as text."""
+    return '' if value is None else str(value).strip()
+
+
 def _amount_column(row: dict) -> float | None:
     for name, value in row.items():
         if str(name).startswith('Сумма (') and str(value).strip() != '':
@@ -85,24 +90,24 @@ def plan_tab(tab: str, rows: list[dict], currency: str) -> list[dict[str, Any]]:
         if tab == 'Выручка' and day:
             details = {k: row.get(h) for k, h in (('cash', 'Наличные'), ('card', 'Карта'), ('qr', 'QR')) if row.get(h) not in (None, '')}
             values = {'operation_type': 'revenue', 'occurred_on': day, 'amount': _money(row.get('Gross Sales')), 'counterparty': None,
-                      'description': f"Смена {row.get('Смена', '')}", 'details': details}
+                      'description': f"Смена {_s(row.get('Смена'))}", 'details': details}
         elif tab == 'Расходы' and day:
-            values = {'operation_type': 'expense', 'occurred_on': day, 'amount': _amount_column(row), 'counterparty': row.get('Поставщик/Магазин') or None,
-                      'description': row.get('Позиция') or '', 'details': {}}
+            values = {'operation_type': 'expense', 'occurred_on': day, 'amount': _amount_column(row), 'counterparty': _s(row.get('Поставщик/Магазин')) or None,
+                      'description': _s(row.get('Позиция')), 'details': {}}
         elif tab == 'Зарплаты' and day:
-            values = {'operation_type': 'salary', 'occurred_on': day, 'amount': _amount_column(row), 'counterparty': row.get('Получатель') or None,
-                      'description': row.get('Примечание') or '', 'details': {}}
+            values = {'operation_type': 'salary', 'occurred_on': day, 'amount': _amount_column(row), 'counterparty': _s(row.get('Получатель')) or None,
+                      'description': _s(row.get('Примечание')), 'details': {}}
         elif tab == 'Закупки' and day:
             values = {'operation_type': 'purchase', 'occurred_on': day, 'amount': None, 'counterparty': None,
-                      'description': row.get('Продукт') or '', 'details': {'quantity': row.get('Количество', '')}}
+                      'description': _s(row.get('Продукт')), 'details': {'quantity': row.get('Количество', '')}}
         elif tab == 'Остатки' and day and row.get('Продукт'):
-            values = {'occurred_on': day, 'category': row.get('Категория') or '', 'product': row['Продукт'], 'fridge': str(row.get('Холодильник', '')),
-                      'freezer': str(row.get('Морозилка', '')), 'note': row.get('Примечание') or ''}
+            values = {'occurred_on': day, 'category': _s(row.get('Категория')), 'product': _s(row['Продукт']), 'fridge': _s(row.get('Холодильник')),
+                      'freezer': _s(row.get('Морозилка')), 'note': _s(row.get('Примечание'))}
         elif tab == 'Проблемы' and day:
-            values = {'occurred_on': day, 'message': str(row.get('Сообщение', ''))[:2000], 'advice': str(row.get('Перевод и совет', ''))[:2000]}
+            values = {'occurred_on': day, 'message': _s(row.get('Сообщение'))[:2000], 'advice': _s(row.get('Перевод и совет'))[:2000]}
         elif tab == 'Напоминания' and row.get('Название'):
-            values = {'title': row['Название'], 'expiry_date': parse_date(row.get('Дата окончания')),
-                      'added_on': parse_date(row.get('Дата добавления')) or dt.date.today().isoformat(), 'note': row.get('Примечание') or ''}
+            values = {'title': _s(row['Название']), 'expiry_date': parse_date(row.get('Дата окончания')),
+                      'added_on': parse_date(row.get('Дата добавления')) or dt.date.today().isoformat(), 'note': _s(row.get('Примечание'))}
         if values is not None:
             out.append({'table': TAB_TABLE[tab], 'key': key, 'values': values, 'event_keyed': bool(event_key)})
     return out
