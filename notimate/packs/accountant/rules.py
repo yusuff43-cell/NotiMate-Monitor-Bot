@@ -35,6 +35,7 @@ COUNTRY_RULES: dict[str, dict[str, Any]] = {
         'transfer_needs_invoice': True,
         'amount_tolerance': 1.0,
         'date_window_days': 3,
+        'expense_doc_policy': 'marker',
     },
     'KZ': {
         'currency': 'KZT',
@@ -46,6 +47,7 @@ COUNTRY_RULES: dict[str, dict[str, Any]] = {
         'transfer_needs_invoice': True,
         'amount_tolerance': 1.0,
         'date_window_days': 3,
+        'expense_doc_policy': 'marker',
     },
 }
 

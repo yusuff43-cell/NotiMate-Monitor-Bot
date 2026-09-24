@@ -387,9 +387,34 @@ def line_owner_command(destination: str, client_cfg: Mapping[str, Any], user_id:
         url = routes.owner_link(tenant, user_id)
         app.notify_owner(client_cfg, f'📊 Подробный отчёт (ссылка действует 5 минут):\n{url}')
         return True
+    if word in ('синхронизировать', 'sync') and routes.link_enabled_for(tenant):
+        from notimate.projections.sheets_sync import run_sync_safely
+        summary = run_sync_safely(destination, dict(client_cfg))
+        app.notify_owner(client_cfg, '✅ Таблица синхронизирована с панелью.' if summary is not None else 'Не удалось синхронизировать, попробуйте позже.')
+        return True
     if word in ('пакет', 'package') and isinstance(modules.get('accountant'), Mapping) and modules['accountant'].get('enabled') and routes.feature_enabled():
         period = _period_arg(command.strip().lower(), previous_period(dt.date.fromisoformat(local_date('Asia/Bangkok'))))
         url = routes.package_link(tenant, user_id, period)
         app.notify_owner(client_cfg, f'📦 Пакет документов за {period} (ссылка действует 15 минут):\n{url}')
         return True
     return False
+
+
+def refresh_sheet_tabs(tenant: Mapping[str, Any], timezone: str | None = None) -> None:
+    """Silent job: make sure the accounting tabs exist and «Не хватает» is current (no chat message).
+
+    Runs for LINE tenants too (they have no weekly digest message) so the owner's sheet always
+    shows the current list.
+    """
+    import app
+    from logging_utils import get_logger
+    from notimate.projections.accounting_sheet import ensure_tabs
+    store = app.documents_store
+    if not (store and app.DOCUMENTS_DB_ENABLED and tenant.get('sheet_id') and app.gc):
+        return
+    try:
+        ensure_tabs(tenant['sheet_id'])
+        _, findings = compute_findings(store, tenant, local_date(timezone)[:7])
+        refresh_missing_tab(tenant, findings)
+    except Exception as exc:
+        get_logger().warning('accountant_sheet_refresh_failed', extra={'error_type': type(exc).__name__})

@@ -100,7 +100,142 @@ class DashboardReaderPostgresTests(unittest.TestCase):
         tenant = self.tenants.get_tenant(self.tenant)
         self.assertEqual(sorted(tenant['owner_ids']), ['a', 'b', 'c'])
         self.assertEqual(tenant['channels'], ['line', 'whatsapp'])
+        pn = self.tenant + '-pn'
+        self.tenants.add_channel_member('whatsapp', pn, 'allowed_chats', '7700')
+        self.tenants.add_channel_member('whatsapp', pn, 'allowed_chats', '7700')  # idempotent
+        self.tenants.add_channel_member('whatsapp', pn, 'owner_ids', 'z')
+        row = self.tenants.find_channel('whatsapp', pn)
+        self.assertEqual(row['channel']['allowed_chats'], ['7700'])
+        self.assertEqual(row['channel']['owner_ids'], ['a', 'b', 'z'])
+        with self.assertRaises(ValueError):
+            self.tenants.add_channel_member('whatsapp', pn, 'secret_ref', 'x')
         self.assertIsNone(self.tenants.get_tenant('no-such-tenant'))
+
+
+class FakeWorksheet:
+    def __init__(self, rows=None, error=None):
+        self.rows, self.error = rows or [], error
+
+    def get_all_records(self):
+        if self.error:
+            raise self.error
+        return self.rows
+
+
+class FakeSpreadsheet:
+    def __init__(self, tabs):
+        self.tabs = tabs
+
+    def worksheet(self, name):
+        if name not in self.tabs:
+            class WorksheetNotFound(Exception):
+                pass
+            raise WorksheetNotFound(name)
+        return self.tabs[name]
+
+
+class FakeGC:
+    def __init__(self, tabs):
+        self.sheet = FakeSpreadsheet(tabs)
+
+    def open_by_key(self, key):
+        return self.sheet
+
+
+@unittest.skipUnless(URL, 'TEST_DATABASE_URL not set')
+class SheetsSyncPostgresTests(unittest.TestCase):
+    def setUp(self):
+        import psycopg
+        from notimate.projections.operations_store import PostgresOperationsStore
+        self.psycopg = psycopg
+        self.tenant = 'sync-' + uuid.uuid4().hex[:8]
+        self.ops = PostgresOperationsStore(URL)
+        self.ops.initialize()
+        self.today = dt.date(2026, 9, 24)
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        with self.psycopg.connect(URL) as conn:
+            for table in ('operations', 'stock_signals', 'issues', 'reminders'):
+                conn.execute(f'DELETE FROM {table} WHERE tenant_id = %s', (self.tenant,))
+
+    def sync(self, tabs, **kw):
+        from notimate.projections.sheets_sync import sync_tenant
+        return sync_tenant(self.tenant, {'sheet_id': 'x'}, database_url=URL, gc=FakeGC(tabs), today=self.today, **kw)
+
+    def rows(self, table='operations'):
+        with self.psycopg.connect(URL) as conn:
+            extra = ', status' if table == 'operations' else ''
+            cols = {'operations': 'event_key, amount, description', 'stock_signals': 'event_key, product, note', 'issues': 'event_key, message', 'reminders': 'event_key, title'}[table]
+            return conn.execute(f'SELECT {cols}{extra} FROM {table} WHERE tenant_id = %s ORDER BY event_key', (self.tenant,)).fetchall()
+
+    def expense_rows(self):
+        return [
+            {'Дата': '2026-09-20', 'Поставщик/Магазин': 'Makro', 'Позиция': 'milk', 'Сумма (THB)': 100, 'NotiMate Event ID': 'evtA:invoice-expense:0'},
+            {'Дата': '2026-09-21', 'Поставщик/Магазин': 'Market', 'Позиция': 'eggs', 'Сумма (THB)': 60},
+        ]
+
+    def test_initial_sync_is_idempotent_and_reuses_event_keys(self):
+        self.ops.record_operation(self.tenant, 'evtA:invoice-expense:0', 'expense', '2026-09-20', 100, 'THB', 'Makro', 'milk')  # dual-write row
+        first = self.sync({'Расходы': FakeWorksheet(self.expense_rows()), 'Остатки': FakeWorksheet([{'Дата': '2026-09-20', 'Продукт': 'Сыр', 'Холодильник': 2, 'Примечание': 'Low stock'}])})
+        self.assertEqual((first['inserted'], first['updated'], first['removed']), (2, 0, 0))  # dual-write row untouched, not duplicated
+        self.assertEqual(len(self.rows()), 2)
+        again = self.sync({'Расходы': FakeWorksheet(self.expense_rows()), 'Остатки': FakeWorksheet([{'Дата': '2026-09-20', 'Продукт': 'Сыр', 'Холодильник': 2, 'Примечание': 'Low stock'}])})
+        self.assertEqual((again['inserted'], again['updated'], again['removed']), (0, 0, 0))
+
+    def test_manual_edit_of_an_event_keyed_row_updates_it_in_place(self):
+        self.sync({'Расходы': FakeWorksheet(self.expense_rows())})
+        edited = self.expense_rows()
+        edited[0]['Сумма (THB)'] = 150
+        result = self.sync({'Расходы': FakeWorksheet(edited)})
+        self.assertEqual(result['updated'], 1)
+        self.assertEqual(float(dict((r[0], r[1]) for r in self.rows())['evtA:invoice-expense:0']), 150.0)
+
+    def test_editing_or_deleting_a_handtyped_row_replaces_or_rejects_it(self):
+        self.sync({'Расходы': FakeWorksheet(self.expense_rows())})
+        edited = self.expense_rows()
+        edited[1]['Сумма (THB)'] = 65
+        result = self.sync({'Расходы': FakeWorksheet(edited)})
+        self.assertEqual((result['inserted'], result['removed']), (1, 1))
+        confirmed = [r for r in self.rows() if r[3] == 'confirmed']
+        self.assertEqual(sorted(float(r[1]) for r in confirmed), [65.0, 100.0])
+        deleted = self.sync({'Расходы': FakeWorksheet(edited[:1])})
+        self.assertEqual(deleted['removed'], 1)
+        self.assertEqual(len([r for r in self.rows() if r[3] == 'confirmed']), 1)
+
+    def test_deleted_rows_are_revived_when_they_return(self):
+        self.sync({'Расходы': FakeWorksheet(self.expense_rows())})
+        self.sync({'Расходы': FakeWorksheet(self.expense_rows()[1:])})
+        self.assertEqual(len([r for r in self.rows() if r[3] == 'confirmed']), 1)
+        back = self.sync({'Расходы': FakeWorksheet(self.expense_rows())})
+        self.assertEqual(back['updated'], 1)
+        self.assertEqual(len([r for r in self.rows() if r[3] == 'confirmed']), 2)
+
+    def test_unreadable_tab_never_deletes(self):
+        self.sync({'Расходы': FakeWorksheet(self.expense_rows())})
+        result = self.sync({'Расходы': FakeWorksheet(error=RuntimeError('quota'))})
+        self.assertEqual((result['removed'], result['inserted']), (0, 0))
+        self.assertEqual(len([r for r in self.rows() if r[3] == 'confirmed']), 2)
+
+    def test_mass_delete_is_refused(self):
+        many = [{'Дата': '2026-09-20', 'Поставщик/Магазин': 'S', 'Позиция': f'item{i}', 'Сумма (THB)': i + 1} for i in range(30)]
+        self.sync({'Расходы': FakeWorksheet(many)})
+        result = self.sync({'Расходы': FakeWorksheet([])})  # e.g. a blank/broken read
+        self.assertEqual(result['removed'], 0)
+        self.assertEqual(result['skipped_removals'], 30)
+        self.assertEqual(len([r for r in self.rows() if r[3] == 'confirmed']), 30)
+
+    def test_legacy_backfill_keys_are_replaced(self):
+        self.ops.record_operation(self.tenant, 'backfill:Расходы:2', 'expense', '2026-09-21', 60, 'THB', 'Market', 'eggs')
+        self.sync({'Расходы': FakeWorksheet(self.expense_rows())})
+        keys = [r[0] for r in self.rows()]
+        self.assertFalse(any(k.startswith('backfill:') for k in keys))
+        self.assertEqual(len(keys), 2)
+
+    def test_dry_run_writes_nothing(self):
+        result = self.sync({'Расходы': FakeWorksheet(self.expense_rows())}, dry_run=True)
+        self.assertTrue(result['dry_run'])
+        self.assertEqual(self.rows(), [])
 
 
 if __name__ == '__main__':

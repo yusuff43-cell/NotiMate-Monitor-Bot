@@ -208,7 +208,7 @@ class PostgresDocumentsStore:
         with _driver()[0].connect(self.database_url, row_factory=_driver()[1]) as conn:
             rows = conn.execute(
                 """
-                SELECT id, operation_type, occurred_on, amount, counterparty, description
+                SELECT id, operation_type, occurred_on, amount, counterparty, description, details
                 FROM operations
                 WHERE tenant_id = %s AND to_char(occurred_on, 'YYYY-MM') = %s AND status = 'confirmed'
                 ORDER BY occurred_on, id

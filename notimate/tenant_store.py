@@ -225,3 +225,18 @@ class PostgresTenantStore:
         tenant['owner_ids'] = merged
         tenant['channels'] = sorted({record['channel'] for record in owners})
         return tenant
+
+    def add_channel_member(self, channel: str, external_id: str, field: str, member: str) -> None:
+        """Append one id to a channel's ``owner_ids`` or ``allowed_chats`` list (idempotent)."""
+        if field not in ('owner_ids', 'allowed_chats'):
+            raise ValueError('field must be owner_ids or allowed_chats')
+        with _driver()[0].connect(self.database_url) as conn:
+            conn.execute(
+                f"""
+                UPDATE tenant_channels
+                SET {field} = COALESCE({field}, '[]'::jsonb) || to_jsonb(%s::text), updated_at = NOW()
+                WHERE channel = %s AND external_id = %s
+                  AND NOT (COALESCE({field}, '[]'::jsonb) @> to_jsonb(%s::text))
+                """,
+                (member, channel, external_id, member),
+            )

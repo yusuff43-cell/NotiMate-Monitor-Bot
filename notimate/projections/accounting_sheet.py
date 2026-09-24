@@ -63,6 +63,17 @@ def refresh_missing(sheet_id: str, findings: list[dict[str, Any]]) -> None:
     ws.update(values=rows, range_name='A1', value_input_option='USER_ENTERED')
 
 
+def ensure_tabs(sheet_id: str) -> None:
+    """Create both accounting tabs (with headers) if missing, so the owner sees them from day one
+    instead of after the first document."""
+    sh = app.gc.open_by_key(sheet_id)
+    get_or_create_sheet(sh, REGISTRY_TAB, REGISTRY_HEADERS)
+    try:
+        sh.worksheet(MISSING_TAB)
+    except Exception:
+        refresh_missing(sheet_id, [])
+
+
 def project_document_safely(sheet_id: str | None, doc: dict[str, Any]) -> None:
     if not (sheet_id and app.gc):
         return

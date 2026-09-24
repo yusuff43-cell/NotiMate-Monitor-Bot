@@ -36,6 +36,7 @@ def tabs(currency: str) -> dict[str, list[str]]:
         'Проблемы': ['Дата', 'Сообщение', 'Перевод и совет'],
         'Напоминания': ['Название', 'Дата окончания', 'Дата добавления', 'Примечание'],
         'Цены': ['Дата', 'Поставщик', 'Позиция', f'Цена ({currency})'],
+        'Отчёты точек': ['Дата', 'Точка', 'Выручка', 'Наличные', 'Безнал', 'Внешние выплаты', 'Остаток наличных', 'Комментарий', 'Сотрудник'],
         'Бухгалтерия': ['№', 'Дата документа', 'Тип', 'Продавец', 'Налоговый №', '№ документа', 'Сумма без НДС', 'НДС', 'Итого', 'Валюта', 'Оплата'],
         'Не хватает': ['Важность', 'Что не хватает / вопрос'],
     }
@@ -43,14 +44,17 @@ def tabs(currency: str) -> dict[str, list[str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--title', required=True)
+    parser.add_argument('--title', help='Title for a NEW spreadsheet (needs the Google Drive API enabled for the project)')
+    parser.add_argument('--sheet-id', help='Use an existing spreadsheet the owner created and shared with the service account (Editor) instead of creating one')
     parser.add_argument('--currency', default='THB')
     parser.add_argument('--share-with', action='append', default=[], help='Owner e-mail (repeatable); gets edit access')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
 
+    if not (args.title or args.sheet_id):
+        parser.error('give --title (create) or --sheet-id (existing)')
     plan = tabs(args.currency)
-    print(f"Spreadsheet «{args.title}»: tabs = {', '.join(plan)}; share with {len(args.share_with)} address(es)")
+    print(f"Spreadsheet «{args.title or args.sheet_id}»: tabs = {', '.join(plan)}; share with {len(args.share_with)} address(es)")
     if args.dry_run:
         print('dry run: nothing created')
         return 0
@@ -59,9 +63,16 @@ def main() -> int:
         scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'],
     )
     gc = gspread.authorize(creds)
-    sh = gc.create(args.title)
-    first = True
+    if args.sheet_id:
+        sh = gc.open_by_key(args.sheet_id)
+        existing = {ws.title for ws in sh.worksheets()}
+    else:
+        sh = gc.create(args.title)
+        existing = set()
+    first = not args.sheet_id
     for name, headers in plan.items():
+        if name in existing:
+            continue  # never touch a tab that already exists
         if first:
             ws = sh.sheet1
             ws.update_title(name)
@@ -70,7 +81,9 @@ def main() -> int:
             ws = sh.add_worksheet(title=name, rows=1000, cols=len(headers) + 1)
         ws.append_row(headers + ([EVENT_ID_HEADER] if name not in ('Не хватает',) else []))
         ws.freeze(rows=1)
-    for email in args.share_with:
+    if args.sheet_id and 'Sheet1' in existing and len(existing) == 1:
+        pass  # an untouched default tab is left for the owner to delete
+    for email in ([] if args.sheet_id else args.share_with):
         sh.share(email, perm_type='user', role='writer', notify=True)
     print(f'created: sheet_id={sh.id}')
     print(f'url: https://docs.google.com/spreadsheets/d/{sh.id}')

@@ -36,6 +36,7 @@ from notimate.projections.operations_store import PostgresOperationsStore
 from notimate.packs.location_reports import PostgresLocationReportsStore, process_location_report_event, send_evening_summary as location_reports_evening_summary
 from notimate.packs.accountant.store import PostgresDocumentsStore
 from notimate.packs.accountant import flow as accountant_flow
+from notimate.access import PostgresAccessStore
 from notimate.dashboard.reader import PostgresDashboardReader
 from notimate.dashboard.routes import register_routes as register_dashboard_routes
 from event_store import PostgresEventStore
@@ -118,6 +119,15 @@ if documents_store:
         DOCUMENTS_DB_ENABLED = True
     except Exception as exc:
         logger.error('documents_store_init_failed', extra={'error_type': type(exc).__name__})
+
+# Заявки на доступ WhatsApp-сотрудников (одобряет разработчик: deploy/access_requests.py).
+access_store = PostgresAccessStore(DATABASE_URL) if DATABASE_URL else None
+if access_store:
+    try:
+        access_store.initialize()
+    except Exception as exc:
+        logger.error('access_store_init_failed', extra={'error_type': type(exc).__name__})
+        access_store = None
 
 # Подробный отчёт (Этап 8): read-only reader for GET /v1/owner-dashboard; the routes stay
 # inert (404) until DASHBOARD_LINK_SECRET and DASHBOARD_API_BASE are set in the environment.
@@ -238,6 +248,7 @@ from notimate.reports.summaries import (  # noqa: E402
 )
 from notimate.packs.accountant.flow import line_owner_command, process_accountant_event, register_line_document  # noqa: E402
 from notimate.packs.monitor import process_monitor_event  # noqa: E402
+from notimate.projections.sheets_sync import run_sync_safely as run_sheets_sync  # noqa: E402
 from notimate.pipeline import process_line_event, process_whatsapp_event  # noqa: E402
 
 
@@ -348,6 +359,19 @@ try:
         if cfg.get('sheet_id') and gc:
             scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, args=[cfg], kwargs={'tenant_id': bot_id}, id=f"evening_{bot_id}")
             scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
+            # Sheets → PostgreSQL sync twice a day (07:00 / 19:00), so hand edits reach the dashboard.
+            scheduler.add_job(run_sheets_sync, 'cron', hour='7,19', minute=5, args=[bot_id, cfg], id=f"sheets_sync_{bot_id}")
+            # Accounting tabs («Бухгалтерия» / «Не хватает») exist and stay current for opted-in tenants.
+            try:
+                line_cfg = find_client(bot_id) or {}
+                if isinstance(line_cfg.get('modules'), dict) and (line_cfg['modules'].get('accountant') or {}).get('enabled'):
+                    line_tenant = {'id': bot_id, 'name': line_cfg.get('name'), 'country': line_cfg.get('country') or 'TH',
+                                   'modules': line_cfg['modules'], 'sheet_id': line_cfg.get('sheet_id'), 'vertical_pack': None}
+                    scheduler.add_job(accountant_flow.refresh_sheet_tabs, 'cron', hour='7,19', minute=20, args=[line_tenant, 'Asia/Bangkok'], id=f"accountant_tabs_{bot_id}")
+                    scheduler.add_job(accountant_flow.refresh_sheet_tabs, 'date', run_date=datetime.datetime.now(pytz.timezone('Asia/Bangkok')) + datetime.timedelta(seconds=45),
+                                      args=[line_tenant, 'Asia/Bangkok'], id=f"accountant_tabs_boot_{bot_id}")
+            except Exception as exc:
+                logger.warning('accountant_tabs_scheduling_failed', extra={'error_type': type(exc).__name__})
     # «Отчёты точек» (Этап 6): 20:00 Asia/Almaty digest per WhatsApp tenant running that
     # pack, one job per configured owner. A per-job timezone works alongside the
     # scheduler's own Asia/Bangkok default (APScheduler supports this per trigger).
@@ -390,6 +414,7 @@ try:
                 tz = pytz.timezone(cfg['timezone'])
                 scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, timezone=tz, args=[cfg], kwargs={'tenant_id': tenant['id']}, id=f"evening_wa_{tenant['id']}")
                 scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, timezone=tz, args=[cfg], id=f"weekly_wa_{tenant['id']}")
+                scheduler.add_job(run_sheets_sync, 'cron', hour='7,19', minute=5, timezone=tz, args=[tenant['id'], cfg], id=f"sheets_sync_wa_{tenant['id']}")
         except Exception as exc:
             logger.warning('monitor_scheduling_failed', extra={'error_type': type(exc).__name__})
         # «Бухгалтер» (Этап 7): month package on the 1st at 09:00 and a Monday «не хватает»
@@ -413,6 +438,7 @@ try:
                     args=[tenant, config['access_token'], config['phone_number_id'], recipients, tz_name],
                     id=f"accountant_package_{tenant['id']}",
                 )
+                scheduler.add_job(accountant_flow.refresh_sheet_tabs, 'cron', hour='7,19', minute=20, timezone=pytz.timezone(tz_name), args=[tenant, tz_name], id=f"accountant_tabs_{tenant['id']}")
                 scheduler.add_job(
                     accountant_flow.send_weekly_missing_digest, 'cron', day_of_week='mon', hour=10, minute=0,
                     timezone=pytz.timezone(tz_name),

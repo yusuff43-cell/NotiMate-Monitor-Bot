@@ -381,33 +381,39 @@ class LineDashboardLinkTests(unittest.TestCase):
 
 
 
-class BackfillPlanTests(unittest.TestCase):
-    def load(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('backfill_from_sheets', os.path.join(os.path.dirname(__file__), 'deploy', 'backfill_from_sheets.py'))
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
-    def test_rows_map_to_ledger_calls_and_reuse_existing_event_keys(self):
-        b = self.load()
-        expenses = b.plan('Расходы', [
+class SyncPlanTests(unittest.TestCase):
+    def test_rows_map_to_ledger_rows_with_event_keys_or_content_keys(self):
+        from notimate.projections.sheets_sync import plan_tab
+        expenses = plan_tab('Расходы', [
             {'Дата': '2026-09-20', 'Поставщик/Магазин': 'Makro', 'Позиция': 'milk', 'Сумма (THB)': '1,250฿', 'NotiMate Event ID': 'evt1:invoice-expense:0'},
+            {'Дата': '2026-09-19', 'Поставщик/Магазин': 'Old', 'Позиция': 'x', 'Сумма (THB)': 40},
             {'Дата': '2026-09-19', 'Поставщик/Магазин': 'Old', 'Позиция': 'x', 'Сумма (THB)': 40},
             {'Дата': 'вчера', 'Сумма (THB)': 1},
         ], 'THB')
-        self.assertEqual([c[0] for c in expenses], ['record_operation', 'record_operation'])
-        self.assertEqual(expenses[0][1][:4], ('evt1:invoice-expense:0', 'expense', '2026-09-20', 1250.0))
-        self.assertEqual(expenses[1][1][0], 'backfill:Расходы:3')
-        revenue = b.plan('Выручка', [{'Дата': '2026-09-20', 'Смена': '2', 'Gross Sales': '10,885', 'Наличные': 3440, 'Карта': 4750, 'QR': 2695}], 'THB')
-        self.assertEqual(revenue[0][1][2:4], ('2026-09-20', 10885.0))
-        self.assertEqual(revenue[0][1][-1], {'cash': 3440, 'card': 4750, 'qr': 2695})
-        grouped = b.plan('Закупки', [{'Дата': '2026-09-20', 'Продукт': 'a', 'Количество': 1}, {'Дата': '', 'Продукт': 'b', 'Количество': 2}, {'Дата': '2026-09-21', 'Продукт': 'c', 'Количество': 3}], 'THB')
-        self.assertEqual([c[1][2] for c in grouped], ['2026-09-20', '2026-09-20', '2026-09-21'])
-        self.assertEqual(b.plan('Остатки', [{'Дата': '2026-09-20', 'Продукт': 'Сыр', 'Холодильник': 3, 'Примечание': 'Low stock'}], 'THB')[0][0], 'record_stock_signal')
-        self.assertEqual(b.plan('Напоминания', [{'Название': 'Лицензия', 'Дата окончания': '2026-12-01'}], 'THB')[0][0], 'record_reminder')
-        self.assertEqual(b.plan('Проблемы', [{'Дата': '2026-09-20 10:15', 'Сообщение': 'сломался', 'Перевод и совет': 'вызвать'}], 'THB')[0][0], 'record_issue')
-        self.assertEqual(b.plan('Зарплаты', [{'Дата': '2026-09-20', 'Получатель': 'Ann', 'Сумма (THB)': 500}], 'THB')[0][1][1], 'salary')
+        self.assertEqual(len(expenses), 3)
+        self.assertEqual((expenses[0]['key'], expenses[0]['values']['amount'], expenses[0]['event_keyed']), ('evt1:invoice-expense:0', 1250.0, True))
+        self.assertTrue(expenses[1]['key'].startswith('sync:Расходы:') and expenses[1]['key'].endswith(':0'))
+        self.assertTrue(expenses[2]['key'].endswith(':1'))  # identical hand-typed rows stay distinct
+        self.assertNotEqual(expenses[1]['key'], expenses[2]['key'])
+
+    def test_editing_a_handtyped_row_changes_its_key(self):
+        from notimate.projections.sheets_sync import plan_tab
+        row = {'Дата': '2026-09-19', 'Поставщик/Магазин': 'Old', 'Позиция': 'x', 'Сумма (THB)': 40}
+        a = plan_tab('Расходы', [row], 'THB')[0]['key']
+        b = plan_tab('Расходы', [{**row, 'Сумма (THB)': 45}], 'THB')[0]['key']
+        self.assertNotEqual(a, b)
+
+    def test_other_tabs_and_grouped_dates(self):
+        from notimate.projections.sheets_sync import plan_tab
+        revenue = plan_tab('Выручка', [{'Дата': '2026-09-20', 'Смена': '2', 'Gross Sales': '10,885', 'Наличные': 3440, 'Карта': 4750, 'QR': 2695}], 'THB')
+        self.assertEqual(revenue[0]['values']['amount'], 10885.0)
+        self.assertEqual(revenue[0]['values']['details'], {'cash': 3440, 'card': 4750, 'qr': 2695})
+        grouped = plan_tab('Закупки', [{'Дата': '2026-09-20', 'Продукт': 'a', 'Количество': 1}, {'Дата': '', 'Продукт': 'b', 'Количество': 2}, {'Дата': '2026-09-21', 'Продукт': 'c', 'Количество': 3}], 'THB')
+        self.assertEqual([g['values']['occurred_on'] for g in grouped], ['2026-09-20', '2026-09-20', '2026-09-21'])
+        self.assertEqual(plan_tab('Остатки', [{'Дата': '2026-09-20', 'Продукт': 'Сыр', 'Холодильник': 3, 'Примечание': 'Low stock'}], 'THB')[0]['table'], 'stock_signals')
+        self.assertEqual(plan_tab('Напоминания', [{'Название': 'Лицензия', 'Дата окончания': '2026-12-01'}], 'THB')[0]['table'], 'reminders')
+        self.assertEqual(plan_tab('Проблемы', [{'Дата': '2026-09-20 10:15', 'Сообщение': 'сломался', 'Перевод и совет': 'вызвать'}], 'THB')[0]['table'], 'issues')
+        self.assertEqual(plan_tab('Зарплаты', [{'Дата': '2026-09-20', 'Получатель': 'Ann', 'Сумма (THB)': 500}], 'THB')[0]['values']['operation_type'], 'salary')
 
 
 if __name__ == '__main__':

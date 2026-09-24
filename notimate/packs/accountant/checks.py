@@ -169,10 +169,23 @@ def check_month(
 
     if compare_operations:
         linked, unmatched_docs, unmatched_ops = link_documents_to_operations(documents, operations, rules)
+        strict = rules.get('expense_doc_policy') == 'all'
+        unmarked = 0
         for op in unmatched_ops:
+            marker = (op.get('details') or {}).get('doc') if isinstance(op.get('details'), dict) else None
+            if marker == 'none':
+                continue  # the sender confirmed there is no document (market, cash) — never «missing»
+            if not strict and marker != 'expected':
+                unmarked += 1
+                continue
             findings.append({
                 'kind': 'expense_without_document', 'severity': 'action', 'operation_id': op.get('id'),
                 'text': f"Нет документа на расход: {op.get('counterparty') or op.get('description') or 'без описания'}, {_money(_num(op.get('amount')), currency)}, {str(op.get('occurred_on'))[:10]}.",
+            })
+        if unmarked:
+            findings.append({
+                'kind': 'unchecked_expenses', 'severity': 'info',
+                'text': f'Расходов без пометки о документе: {unmarked} — не проверялись (добавляйте к расходу «чек» или «без чека»).',
             })
         for doc in unmatched_docs:
             if doc.get('doc_type') == 'bank_slip':

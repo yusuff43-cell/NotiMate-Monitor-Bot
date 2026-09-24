@@ -22,6 +22,7 @@ SUMMARY_COMMANDS = ('сводка', 'отчет', 'отчёт', 'подробн�
 REMINDER_COMMANDS = ('напоминания', 'reminders')
 WEEK_COMMANDS = ('неделя', 'week', 'недельная')
 DASHBOARD_COMMANDS = ('дашборд', 'dashboard')
+SYNC_COMMANDS = ('синхронизировать', 'синхронизация', 'sync')
 HELP_COMMANDS = ('помощь', 'справка', 'help', 'меню', 'menu')
 
 HELP_TEXT = (
@@ -29,7 +30,7 @@ HELP_TEXT = (
     'Сотрудники: пришлите фото чека, накладной, отчёта смены или PDF; либо напишите текстом '
     '(«купили молоко 200», «остаток сыр 3 кг», «сломался холодильник») — бот запишет всё в таблицу.\n\n'
     'Владелец: «Деньги» — выручка и расходы, «Отчёт» — подробный отчёт, «Напоминания», «Неделя», '
-    '«Дашборд» — ссылка на панель с цифрами, «Не хватает» и «Пакет» — документы для бухгалтера.'
+    '«Дашборд» — ссылка на панель с цифрами, «Синхронизировать» — подтянуть правки из таблицы в панель, «Не хватает» и «Пакет» — документы для бухгалтера.'
 )
 
 
@@ -111,6 +112,11 @@ def process_monitor_event(row: dict[str, Any], config: dict[str, Any], inbound) 
                 return
             if command in WEEK_COMMANDS:
                 app.weekly_report(cfg)
+                return
+            if command in SYNC_COMMANDS:
+                from notimate.projections.sheets_sync import run_sync_safely
+                summary = run_sync_safely(tenant_id, cfg)
+                reply('✅ Таблица синхронизирована с панелью.' if summary is not None else 'Не удалось синхронизировать, попробуйте позже.')
                 return
             if command in DASHBOARD_COMMANDS:
                 from notimate.dashboard.routes import owner_link

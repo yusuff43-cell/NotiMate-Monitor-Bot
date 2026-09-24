@@ -41,8 +41,8 @@ def doc(number, doc_type='tax_invoice', seller='Makro', total=1000, date='2026-0
             'subtotal': None, 'vat': None, 'tax_id': '', 'doc_ref': '', 'image_sha256': None, 'storage_ref': None, **extra}
 
 
-def op(op_id, amount, date='2026-09-10', kind='expense', who='Makro'):
-    return {'id': op_id, 'operation_type': kind, 'amount': amount, 'occurred_on': date, 'counterparty': who, 'description': ''}
+def op(op_id, amount, date='2026-09-10', kind='expense', who='Makro', doc=None):
+    return {'id': op_id, 'operation_type': kind, 'amount': amount, 'occurred_on': date, 'counterparty': who, 'description': '', 'details': {'doc': doc} if doc else {}}
 
 
 class RulesTests(unittest.TestCase):
@@ -75,8 +75,21 @@ class ChecksTests(unittest.TestCase):
         self.assertEqual(self.kinds(findings), ['missing_formal_document'])
 
     def test_expense_without_document_and_document_without_expense(self):
-        findings = checks.check_month([doc('2026-09-001', total=500)], [op(1, 3450)], TH, compare_operations=True)
+        findings = checks.check_month([doc('2026-09-001', total=500)], [op(1, 3450, doc='expected')], TH, compare_operations=True)
         self.assertEqual(self.kinds(findings), ['document_without_expense', 'expense_without_document'])
+
+    def test_unmarked_expense_is_not_reported_as_missing_but_is_counted(self):
+        findings = checks.check_month([], [op(1, 200), op(2, 300)], TH)
+        self.assertEqual(self.kinds(findings), ['unchecked_expenses'])
+        self.assertIn('2', findings[0]['text'])
+
+    def test_expense_confirmed_without_document_is_never_reported(self):
+        self.assertEqual(checks.check_month([], [op(1, 200, doc='none')], TH), [])
+
+    def test_strict_policy_flags_every_unmatched_expense(self):
+        strict = rules_for('TH', {'accountant': {'rules': {'expense_doc_policy': 'all'}}})
+        self.assertEqual(self.kinds(checks.check_month([], [op(1, 200)], strict)), ['expense_without_document'])
+        self.assertEqual(checks.check_month([], [op(1, 200, doc='none')], strict), [])
 
     def test_matching_document_and_expense_is_clean(self):
         self.assertEqual(checks.check_month([doc('2026-09-001', total=3450)], [op(1, 3450, '2026-09-12')], TH), [])
@@ -122,6 +135,17 @@ class ChecksTests(unittest.TestCase):
         self.assertLess(text.index('act0'), text.find('info-item') if 'info-item' in text else 10**6)
         self.assertIn('и ещё 2', text)
         self.assertIn('Всё в порядке', checks.summarize_findings([]))
+
+
+class MarkerTests(unittest.TestCase):
+    def test_markers_in_three_languages_negatives_first(self):
+        from notimate.packs.accountant.markers import document_marker
+        for text in ('молоко 200 чек', 'закупка, накладная приложу', 'bought ice, receipt later', 'ซื้อนม ใบเสร็จ', 'tax invoice Makro'):
+            self.assertEqual(document_marker(text), 'expected', text)
+        for text in ('овощи 500 без чека', 'рынок, нет чека', 'ice 35 no receipt', 'ซื้อผัก ไม่มีใบเสร็จ', 'без накладной взяли'):
+            self.assertEqual(document_marker(text), 'none', text)
+        for text in ('молоко 200', 'купили лёд', '', None):
+            self.assertIsNone(document_marker(text), text)
 
 
 class ExtractTests(unittest.TestCase):

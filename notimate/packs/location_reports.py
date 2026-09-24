@@ -364,6 +364,13 @@ def _normalize_command(text: str) -> str:
     return text.strip().lower().lstrip('/')
 
 
+def _project_to_sheet(tenant: dict[str, Any], draft: Any, location_name: str, staff_name: str) -> None:
+    """Mirror a confirmed report into the tenant's «Отчёты точек» tab when it has a sheet (best effort)."""
+    from notimate.projections.location_sheet import project_report_safely
+    if isinstance(draft, dict) and draft.get('id'):
+        project_report_safely(tenant.get('sheet_id'), draft, location_name, staff_name)
+
+
 def process_location_report_event(row: dict[str, Any], config: dict[str, Any], inbound) -> None:
     """Dispatch one inbound WhatsApp message for a location_reports-pack tenant.
 
@@ -411,6 +418,7 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
             return
         if text.startswith('report:confirm:'):
             location = store.find_staff(tenant_id, draft['sender_id'])
+            _project_to_sheet(row['tenant'], draft, location['location_name'] if location else draft['location_id'], (location or {}).get('name') or '')
             reply(format_confirmed_message(location['location_name'] if location else draft['location_id']))
         else:
             reply('Отчёт отменён. Отправьте исправленный вариант.')
@@ -466,9 +474,10 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
     policy = resolve_policy(row['tenant'], 'location_reports', 'report')
     if not needs_confirmation(policy, report_is_confident(fields)):
         try:
-            store.confirm_draft(draft_id)
+            confirmed = store.confirm_draft(draft_id)
         except DraftAlreadyFinalized:
             return
+        _project_to_sheet(row['tenant'], confirmed, staff['location_name'], staff.get('name') or '')
         reply(format_confirmed_message(staff['location_name']) + '\n' + format_draft_message(staff['location_name'], fields).split('\n', 1)[1])
         return
     app.whatsapp_send_interactive_buttons(

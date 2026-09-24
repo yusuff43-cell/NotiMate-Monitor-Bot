@@ -8,8 +8,10 @@ import re
 
 import app
 from logging_utils import get_logger
+from notimate.access import request_access, sender_is_known
 from notimate.inbound import build_whatsapp_inbound_message
 from notimate.projections.sheets import _money
+from notimate.packs.accountant.markers import document_marker
 from notimate.tenants import cfg_currency, is_group_allowed
 from notimate.timeutil import local_now
 
@@ -164,7 +166,8 @@ def handle_text(destination, client_cfg, event_id, text):
             supplier = data.get('supplier', '')
             positions = ', '.join([i['description'] for i in items if i.get('description')])
             app.save_расходы(client_cfg['sheet_id'], [{'type': 'Закупка', 'description': positions, 'amount': total}], date_only, supplier, event_id=event_id, effect='text-expense', **_cur_kw(cur))
-            app.record_operation_safely(destination, f'{event_id}:text-expense:0', 'expense', date_only, _money(total), cur, supplier, positions)
+            marker = document_marker(text)
+            app.record_operation_safely(destination, f'{event_id}:text-expense:0', 'expense', date_only, _money(total), cur, supplier, positions, *([{'doc': marker}] if marker else []))
             app.refresh_overview_safely(client_cfg)
             app.notify_owner(client_cfg, f"💸 РАСХОД записан:\nМагазин: {supplier}\nПозиции: {positions}\nИтого: {total} {cur}")
     except Exception as e:
@@ -270,6 +273,12 @@ def process_whatsapp_event(phone_number_id, message):
     inbound = build_whatsapp_inbound_message(row, message)
     if not inbound.text and not inbound.media:
         return
+    if row['tenant'].get('vertical_pack') in ('location_reports', 'accountant', 'monitor'):
+        staff_lookup = app.location_reports_store.find_staff if app.location_reports_store else None
+        if not sender_is_known(row, inbound.sender_id, staff_lookup):
+            # Unknown number: nothing is processed until the operator approves the request.
+            request_access(row, config, inbound)
+            return
     if row['tenant'].get('vertical_pack') == 'location_reports':
         app.process_location_report_event(row, config, inbound)
         return

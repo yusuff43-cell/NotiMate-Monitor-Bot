@@ -207,5 +207,40 @@ class PhotoReportDispatchTests(unittest.TestCase):
         self.send_buttons.assert_called_once()
 
 
+class LocationSheetTests(unittest.TestCase):
+    def setUp(self):
+        self.orig = (app_module.location_reports_store, app_module.LOCATION_REPORTS_DB_ENABLED)
+        self.addCleanup(lambda: (setattr(app_module, 'location_reports_store', self.orig[0]), setattr(app_module, 'LOCATION_REPORTS_DB_ENABLED', self.orig[1])))
+        self.store = Mock()
+        self.store.find_staff.return_value = {'location_id': 'loc-1', 'location_name': 'Точка 1', 'name': 'Аня'}
+        app_module.location_reports_store = self.store
+        app_module.LOCATION_REPORTS_DB_ENABLED = True
+        patch.object(app_module, 'whatsapp_send_text').start()
+        self.project = patch('notimate.projections.location_sheet.project_report_safely').start()
+        self.addCleanup(patch.stopall)
+        self.row = {**ROW, 'tenant': {**ROW['tenant'], 'sheet_id': 'SHEET'}}
+
+    def test_button_confirm_mirrors_report_into_the_sheet_tab(self):
+        draft = {'id': 'd1', 'sender_id': 's1', 'location_id': 'loc-1', 'revenue': 100, 'occurred_on': '2026-09-24'}
+        self.store.confirm_draft.return_value = draft
+        lr.process_location_report_event(self.row, CONFIG, inbound(text='report:confirm:d1'))
+        self.project.assert_called_once_with('SHEET', draft, 'Точка 1', 'Аня')
+
+    def test_auto_confirmed_report_is_mirrored_too(self):
+        fields = {'revenue': 100, 'cash': 60, 'non_cash': 40, 'comment': ''}
+        self.store.create_draft.return_value = 'd2'
+        self.store.confirm_draft.return_value = {'id': 'd2', 'revenue': 100}
+        row = {**self.row, 'tenant': {**self.row['tenant'], 'modules': {'confirmation': {'report': 'auto'}}}}
+        with patch.object(lr, 'analyze_report_text', return_value=fields):
+            lr.process_location_report_event(row, CONFIG, inbound(text='выручка 100'))
+        self.project.assert_called_once()
+
+    def test_row_layout_matches_headers(self):
+        from notimate.projections.location_sheet import HEADERS, report_row
+        cells = report_row({'occurred_on': '2026-09-24', 'revenue': 1, 'cash': 2, 'non_cash': None, 'external_payouts': 3, 'cash_balance': 4, 'comment': 'x'}, 'Т1', 'Аня')
+        self.assertEqual(len(cells), len(HEADERS))
+        self.assertEqual((cells[1], cells[4], cells[8]), ('Т1', '', 'Аня'))
+
+
 if __name__ == '__main__':
     unittest.main()
