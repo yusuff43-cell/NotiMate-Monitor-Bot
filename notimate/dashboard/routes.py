@@ -49,12 +49,13 @@ def _no_store(response: Response) -> Response:
 
 def link_enabled_for(tenant: dict[str, Any]) -> bool:
     """Which tenants may be issued links: the packs that have dashboard data by design, or
-    any tenant that opts in with ``modules.dashboard.enabled`` (JSC stays off by default)."""
+    any tenant that opts in with ``modules.dashboard.enabled`` (JSC stays off by default). Every WhatsApp mode («Монитор», «Отчёты точек», «Бухгалтер», also as an extra mode) has dashboard data by design."""
     if not feature_enabled():
         return False
     modules = tenant.get('modules') or {}
     dashboard = modules.get('dashboard') if isinstance(modules, dict) else None
-    return tenant.get('vertical_pack') in ('location_reports', 'accountant') or bool(isinstance(dashboard, dict) and dashboard.get('enabled'))
+    from notimate.tenants import tenant_packs
+    return bool(tenant_packs(tenant)) or bool(isinstance(dashboard, dict) and dashboard.get('enabled'))
 
 
 def owner_link(tenant: dict[str, Any], subject: str) -> str | None:

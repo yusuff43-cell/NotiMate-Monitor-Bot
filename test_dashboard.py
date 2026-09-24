@@ -345,7 +345,10 @@ class RouteTests(unittest.TestCase):
     def test_owner_link_helpers_respect_pack_and_feature_flag(self):
         from notimate.dashboard import routes
         self.assertTrue(routes.owner_link(self.tenants['a'], 'ownerA').startswith('https://api.example/auth/link?t='))
-        self.assertIsNone(routes.owner_link(self.tenants['b'], 'ownerB'))  # not a dashboard pack, not opted in
+        for pack in ('monitor', 'accountant', 'location_reports'):
+            self.assertIsNotNone(routes.owner_link({'id': 'x', 'vertical_pack': pack}, 'o'), pack)
+        self.assertIsNotNone(routes.owner_link({'id': 'x', 'vertical_pack': None, 'modules': {'extra_packs': ['monitor']}}, 'o'))
+        self.assertIsNone(routes.owner_link(self.tenants['b'], 'ownerB'))  # no mode, not opted in (e.g. a LINE tenant)
         opted_in = {**self.tenants['b'], 'modules': {'dashboard': {'enabled': True}}}
         self.assertIsNotNone(routes.owner_link(opted_in, 'ownerB'))
         with patch.dict(os.environ, {'DASHBOARD_LINK_SECRET': ''}):
