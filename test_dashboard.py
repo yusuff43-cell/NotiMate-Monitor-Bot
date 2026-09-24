@@ -380,5 +380,33 @@ class LineDashboardLinkTests(unittest.TestCase):
             notify.assert_not_called()
 
 
+
+class BackfillPlanTests(unittest.TestCase):
+    def load(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('backfill_from_sheets', os.path.join(os.path.dirname(__file__), 'deploy', 'backfill_from_sheets.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_rows_map_to_ledger_calls_and_reuse_existing_event_keys(self):
+        b = self.load()
+        expenses = b.plan('Расходы', [
+            {'Дата': '2026-09-20', 'Поставщик/Магазин': 'Makro', 'Позиция': 'milk', 'Сумма (THB)': '1,250฿', 'NotiMate Event ID': 'evt1:invoice-expense:0'},
+            {'Дата': '2026-09-19', 'Поставщик/Магазин': 'Old', 'Позиция': 'x', 'Сумма (THB)': 40},
+            {'Дата': 'вчера', 'Сумма (THB)': 1},
+        ], 'THB')
+        self.assertEqual([c[0] for c in expenses], ['record_operation', 'record_operation'])
+        self.assertEqual(expenses[0][1][:4], ('evt1:invoice-expense:0', 'expense', '2026-09-20', 1250.0))
+        self.assertEqual(expenses[1][1][0], 'backfill:Расходы:3')
+        revenue = b.plan('Выручка', [{'Дата': '2026-09-20', 'Смена': '2', 'Gross Sales': '10,885', 'Наличные': 3440, 'Карта': 4750, 'QR': 2695}], 'THB')
+        self.assertEqual(revenue[0][1][2:4], ('2026-09-20', 10885.0))
+        self.assertEqual(revenue[0][1][-1], {'cash': 3440, 'card': 4750, 'qr': 2695})
+        self.assertEqual(b.plan('Остатки', [{'Дата': '2026-09-20', 'Продукт': 'Сыр', 'Холодильник': 3, 'Примечание': 'Low stock'}], 'THB')[0][0], 'record_stock_signal')
+        self.assertEqual(b.plan('Напоминания', [{'Название': 'Лицензия', 'Дата окончания': '2026-12-01'}], 'THB')[0][0], 'record_reminder')
+        self.assertEqual(b.plan('Проблемы', [{'Дата': '2026-09-20 10:15', 'Сообщение': 'сломался', 'Перевод и совет': 'вызвать'}], 'THB')[0][0], 'record_issue')
+        self.assertEqual(b.plan('Зарплаты', [{'Дата': '2026-09-20', 'Получатель': 'Ann', 'Сумма (THB)': 500}], 'THB')[0][1][1], 'salary')
+
+
 if __name__ == '__main__':
     unittest.main()
