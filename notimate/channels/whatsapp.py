@@ -162,3 +162,79 @@ def send_interactive_buttons(access_token: str, phone_number_id: str, recipient:
             ]},
         },
     })
+
+
+def _get(access_token: str, url: str) -> bytes:
+    request = urllib.request.Request(url, headers={'Authorization': f'Bearer {access_token}'})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f'WhatsApp media request failed ({exc.code}): {detail}') from exc
+
+
+def download_media(access_token: str, media_id: str, max_bytes: int = 10 * 1024 * 1024) -> tuple[bytes, str]:
+    """Fetch an inbound media file (photo) by its Cloud API media id.
+
+    Two calls, as Meta documents: GET /{media_id} returns a short-lived URL plus the mime
+    type, then that URL is fetched with the same Bearer token. The size is checked before
+    the file is downloaded so an oversized upload can't exhaust the 1.9 GB host.
+    """
+    meta = json.loads(_get(access_token, f'{GRAPH_BASE_URL}/{GRAPH_VERSION}/{media_id}').decode('utf-8') or '{}')
+    url = meta.get('url')
+    if not url:
+        raise RuntimeError('WhatsApp media metadata has no url')
+    declared = int(meta.get('file_size') or 0)
+    if declared and declared > max_bytes:
+        raise RuntimeError(f'WhatsApp media too large ({declared} bytes)')
+    data = _get(access_token, url)
+    if len(data) > max_bytes:
+        raise RuntimeError(f'WhatsApp media too large ({len(data)} bytes)')
+    return data, str(meta.get('mime_type') or 'image/jpeg')
+
+
+def _multipart(fields: dict[str, str], file_field: str, filename: str, mime: str, data: bytes) -> tuple[bytes, str]:
+    boundary = 'notimate' + hashlib.sha256(data[:4096] + filename.encode()).hexdigest()[:24]
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode('utf-8')
+        )
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+        f'Content-Type: {mime}\r\n\r\n'.encode('utf-8') + data + b'\r\n'
+    )
+    parts.append(f'--{boundary}--\r\n'.encode('utf-8'))
+    return b''.join(parts), f'multipart/form-data; boundary={boundary}'
+
+
+def upload_media(access_token: str, phone_number_id: str, filename: str, mime: str, data: bytes) -> str:
+    """Upload a file to WhatsApp and return its media id (used to send documents)."""
+    body, content_type = _multipart({'messaging_product': 'whatsapp', 'type': mime}, 'file', filename, mime, data)
+    request = urllib.request.Request(
+        f'{GRAPH_BASE_URL}/{GRAPH_VERSION}/{phone_number_id}/media',
+        data=body,
+        method='POST',
+        headers={'Authorization': f'Bearer {access_token}', 'Content-Type': content_type},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            media_id = json.loads(response.read().decode('utf-8') or '{}').get('id')
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f'WhatsApp media upload failed ({exc.code}): {detail}') from exc
+    if not media_id:
+        raise RuntimeError('WhatsApp media upload returned no id')
+    return str(media_id)
+
+
+def send_document(
+    access_token: str, phone_number_id: str, recipient: str,
+    filename: str, mime: str, data: bytes, caption: str = '',
+) -> dict:
+    media_id = upload_media(access_token, phone_number_id, filename, mime, data)
+    document: dict = {'id': media_id, 'filename': filename}
+    if caption:
+        document['caption'] = caption
+    return _post(access_token, phone_number_id, {'to': recipient, 'type': 'document', 'document': document})

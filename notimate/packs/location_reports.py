@@ -9,8 +9,9 @@ raises DraftAlreadyFinalized instead of creating a second report.
 Report fields follow docs/21's own list verbatim (owner hasn't handed over Ержан's actual
 notebook yet — placeholder locations are seeded until real names/staff arrive):
 дата, точка, выручка, наличные, безнал, внешние выплаты, остаток наличных,
-комментарий/проблема. Photo reports are not implemented yet (docs/21 says "текстом или
-фото"); text-only is this pass's scope, photo is a near-term follow-up.
+комментарий/проблема. A report can arrive as text or as a photo (notebook page, Z-report,
+terminal slip); both produce the same fields. Whether it needs the confirm buttons or is
+saved straight away is decided by notimate/policy.py (Этап 5).
 """
 
 from __future__ import annotations
@@ -245,7 +246,27 @@ REPORT_PROMPT = """Ты извлекаешь данные ежедневного
 def analyze_report_text(text: str) -> dict[str, Any] | None:
     """Call the model to extract report fields from free text, or None if not a report."""
     import app
-    result = app.ask_openai(REPORT_PROMPT, text, 800)
+    return _parse_report_fields(app.ask_openai(REPORT_PROMPT, text, 800))
+
+
+IMAGE_REPORT_NOTE = (
+    'Входные данные — ФОТО (страница тетради, Z-отчёт кассы, слип терминала или чек) '
+    'и, возможно, подпись к нему. Возьми цифры с фото; если на фото нет данных отчёта — верни только: IGNORE'
+)
+
+
+def analyze_report_image(image_b64: str, mime: str = 'image/jpeg', caption: str = '') -> dict[str, Any] | None:
+    """Same extraction as ``analyze_report_text`` but from a photo (docs/21: «текстом или фото»)."""
+    import app
+    content = [
+        {'type': 'input_text', 'text': caption or 'Извлеки данные отчёта с фото.'},
+        {'type': 'input_image', 'image_url': f'data:{mime};base64,{image_b64}', 'detail': 'high'},
+    ]
+    result = app.ask_openai(REPORT_PROMPT + '\n\n' + IMAGE_REPORT_NOTE, [{'role': 'user', 'content': content}], 800)
+    return _parse_report_fields(result)
+
+
+def _parse_report_fields(result: str | None) -> dict[str, Any] | None:
     if not result or result.strip() == 'IGNORE':
         return None
     match = re.search(r'\{.*\}', result, re.DOTALL)
@@ -255,7 +276,27 @@ def analyze_report_text(text: str) -> dict[str, Any] | None:
         data = json.loads(match.group())
     except ValueError:
         return None
+    if not isinstance(data, dict):
+        return None
     return {field: data.get(field) for field in REPORT_FIELDS}
+
+
+def report_is_confident(fields: dict[str, Any]) -> bool:
+    """Deterministic sanity check for ``confirm_if_low_confidence`` (no model self-rating):
+    revenue must be present, every number non-negative, and when both payment splits are
+    given they must add up to the revenue (±1)."""
+    try:
+        numbers = {
+            key: float(fields[key]) for key in ('revenue', 'cash', 'non_cash', 'external_payouts', 'cash_balance')
+            if fields.get(key) is not None
+        }
+    except (TypeError, ValueError):
+        return False
+    if 'revenue' not in numbers or any(value < 0 for value in numbers.values()):
+        return False
+    if 'cash' in numbers and 'non_cash' in numbers:
+        return abs(numbers['cash'] + numbers['non_cash'] - numbers['revenue']) <= 1
+    return True
 
 
 def format_draft_message(location_name: str, fields: dict[str, Any]) -> str:
@@ -304,11 +345,13 @@ def format_missing_report(all_locations: list[dict[str, Any]], reported_ids: set
 OWNER_SUMMARY_COMMANDS = ('сводка', 'свод', 'summary')
 OWNER_MISSING_COMMANDS = ('кто не отчитался', 'не отчитались', 'кто не сдал', 'missing')
 OWNER_HELP_COMMANDS = ('помощь', 'справка', 'help')
+OWNER_DASHBOARD_COMMANDS = ('подробный отчёт', 'подробный отчет', 'дашборд', 'dashboard', 'report')
 OWNER_HELP_TEXT = (
     'NotiMate — отчёты точек.\n\n'
     '• Напишите цифры за день (выручка, наличные, безнал, остаток) — придёт черновик с кнопками Сохранить/Изменить/Отмена.\n'
     '• «Сводка» — итоги по всем точкам за сегодня.\n'
-    '• «Кто не отчитался» — список точек без отчёта.\n\n'
+    '• «Кто не отчитался» — список точек без отчёта.\n'
+    '• «Дашборд» — ссылка на подробный отчёт (действует 5 минут).\n\n'
     'В поле ввода наберите «/», чтобы увидеть эти команды списком.'
 )
 
@@ -328,9 +371,12 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
     draft → confirm/cancel flow; an unregistered sender is told to contact the owner.
     """
     import app
-    from notimate.timeutil import almaty_date
+    from notimate.policy import needs_confirmation, resolve_policy
+    from notimate.timeutil import local_date
 
     tenant_id = row['tenant']['id']
+    tz_name = config.get('timezone') or row['tenant'].get('timezone')
+    today_local = lambda: local_date(tz_name)  # noqa: E731 — tenant-local business date
     store = app.location_reports_store
     text = inbound.text.strip()
     access_token, phone_number_id = config['access_token'], config['phone_number_id']
@@ -372,13 +418,13 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
     if inbound.sender_role == 'owner':
         command = _normalize_command(text)
         if command in OWNER_SUMMARY_COMMANDS:
-            today = almaty_date()
+            today = today_local()
             reports = store.reports_for_date(tenant_id, today)
             locations = store.list_locations(tenant_id)
             reply(format_summary(reports, locations, today))
             return
         if command in OWNER_MISSING_COMMANDS:
-            today = almaty_date()
+            today = today_local()
             locations = store.list_locations(tenant_id)
             reported = store.reported_location_ids(tenant_id, today)
             reply(format_missing_report(locations, reported))
@@ -386,18 +432,44 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
         if command in OWNER_HELP_COMMANDS:
             reply(OWNER_HELP_TEXT)
             return
+        if command in OWNER_DASHBOARD_COMMANDS:
+            from notimate.dashboard.routes import owner_link
+            url = owner_link(row['tenant'], inbound.sender_id)
+            reply(f'📊 Подробный отчёт (ссылка действует 5 минут):\n{url}' if url else 'Подробный отчёт пока не подключён.')
+            return
 
     staff = store.find_staff(tenant_id, inbound.sender_id)
     if not staff:
         reply('Доступ к отчётам не настроен для этого номера. Обратитесь к владельцу.')
         return
 
-    fields = analyze_report_text(text)
+    media = getattr(inbound, 'media', ())
+    if media and media[0].get('kind') == 'image':
+        try:
+            data, mime = app.whatsapp_download_media(access_token, media[0]['id'])
+        except Exception as exc:
+            from logging_utils import get_logger
+            get_logger().warning('location_report_media_failed', extra={'error_type': type(exc).__name__})
+            reply('Не удалось получить фото. Отправьте его ещё раз или напишите цифры текстом.')
+            return
+        import base64
+        fields = analyze_report_image(base64.b64encode(data).decode('ascii'), mime, text)
+    else:
+        fields = analyze_report_text(text)
     if fields is None:
         reply('Не смог распознать отчёт. Укажите выручку, наличные, безнал и остаток наличных.')
         return
 
-    draft_id = store.create_draft(tenant_id, staff['location_id'], inbound.sender_id, almaty_date(), fields, text)
+    source_text = text or '[фото]'
+    draft_id = store.create_draft(tenant_id, staff['location_id'], inbound.sender_id, today_local(), fields, source_text)
+    policy = resolve_policy(row['tenant'], 'location_reports', 'report')
+    if not needs_confirmation(policy, report_is_confident(fields)):
+        try:
+            store.confirm_draft(draft_id)
+        except DraftAlreadyFinalized:
+            return
+        reply(format_confirmed_message(staff['location_name']) + '\n' + format_draft_message(staff['location_name'], fields).split('\n', 1)[1])
+        return
     app.whatsapp_send_interactive_buttons(
         access_token, phone_number_id, inbound.sender_id,
         format_draft_message(staff['location_name'], fields),
@@ -409,17 +481,17 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
     )
 
 
-def send_evening_summary(tenant_id: str, access_token: str, phone_number_id: str, owner_id: str) -> None:
+def send_evening_summary(tenant_id: str, access_token: str, phone_number_id: str, owner_id: str, timezone: str | None = None) -> None:
     """Scheduled 20:00 Asia/Almaty digest across every location — owner_menu-style job,
     registered once per (tenant, owner) in app.py's scheduler alongside the LINE jobs."""
     import app
-    from notimate.timeutil import almaty_date
+    from notimate.timeutil import local_date
 
     store = app.location_reports_store
     if not store:
         return
     try:
-        today = almaty_date()
+        today = local_date(timezone)
         reports = store.reports_for_date(tenant_id, today)
         locations = store.list_locations(tenant_id)
         app.whatsapp_send_text(access_token, phone_number_id, owner_id, format_summary(reports, locations, today))

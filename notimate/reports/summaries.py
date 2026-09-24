@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import os
+
 import pytz
 
 import app
@@ -92,8 +94,33 @@ def weekly_report(client_cfg):
         logger.error('weekly_report_failed', extra={'error_type': type(exc).__name__})
 
 
-def evening_summary(client_cfg):
-    """Короткая сводка для владельца в 20:00 по Бангкоку."""
+def postgres_period_totals(tenant_id, now):
+    """(revenue_today, revenue_month, expenses_today, expenses_month) from the Этап 4 ledger,
+    or None when PostgreSQL can't answer — the caller then falls back to Sheets, so switching
+    the source can never leave the owner without a summary."""
+    reader = getattr(app, 'dashboard_reader', None)
+    if not (tenant_id and reader):
+        return None
+    try:
+        today = now.date()
+        totals = reader.daily_totals(tenant_id, today.replace(day=1), today, False)
+    except Exception as exc:
+        logger.warning('postgres_report_source_failed', extra={'error_type': type(exc).__name__})
+        return None
+    day = totals.get(today.isoformat(), {})
+    return (
+        day.get('revenue', 0.0), sum(v['revenue'] for v in totals.values()),
+        day.get('expenses', 0.0), sum(v['expenses'] for v in totals.values()),
+    )
+
+
+def evening_summary(client_cfg, tenant_id=None):
+    """Короткая сводка для владельца в 20:00 по Бангкоку.
+
+    Numbers come from Sheets by default. ``REPORTS_SOURCE=postgres`` (Этап 4 switch-over,
+    enabled only after ``deploy/compare_sheets_vs_postgres.py`` shows a week of matching
+    data) reads the PostgreSQL ledger instead, with Sheets as the fallback.
+    """
     if not app.gc:
         return
     try:
@@ -104,18 +131,22 @@ def evening_summary(client_cfg):
         sh = app.gc.open_by_key(client_cfg['sheet_id'])
 
         revenue_today = revenue_month = expenses_today = expenses_month = 0.0
-        try:
-            rows = sh.worksheet('Выручка').get_all_records()
-            revenue_today = sum(_money(row.get('Gross Sales')) for row in rows if str(row.get('Дата', '')).startswith(date_today))
-            revenue_month = sum(_money(row.get('Gross Sales')) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
-        except Exception:
-            pass
-        try:
-            rows = sh.worksheet('Расходы').get_all_records()
-            expenses_today = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(date_today))
-            expenses_month = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
-        except Exception:
-            pass
+        pg_totals = postgres_period_totals(tenant_id, now) if os.environ.get('REPORTS_SOURCE') == 'postgres' else None
+        if pg_totals:
+            revenue_today, revenue_month, expenses_today, expenses_month = pg_totals
+        else:
+            try:
+                rows = sh.worksheet('Выручка').get_all_records()
+                revenue_today = sum(_money(row.get('Gross Sales')) for row in rows if str(row.get('Дата', '')).startswith(date_today))
+                revenue_month = sum(_money(row.get('Gross Sales')) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
+            except Exception:
+                pass
+            try:
+                rows = sh.worksheet('Расходы').get_all_records()
+                expenses_today = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(date_today))
+                expenses_month = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
+            except Exception:
+                pass
 
         balance_today = revenue_today - expenses_today
         msg = (

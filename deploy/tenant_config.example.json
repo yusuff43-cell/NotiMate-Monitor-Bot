@@ -1,0 +1,24 @@
+{
+  "tenant": {
+    "id": "erzhan-3biz",
+    "name": "Ержан — 3 точки",
+    "country": "KZ",
+    "timezone": "Asia/Almaty",
+    "business_type": "retail",
+    "vertical_pack": "location_reports",
+    "modules": {
+      "confirmation": {"report": "confirm_if_low_confidence"},
+      "dashboard": {"enabled": true}
+    }
+  },
+  "channels": [
+    {"channel": "whatsapp", "external_id": "PHONE_NUMBER_ID", "secret_ref": "SECRET_REF_NAME", "owner_ids": ["77000000000"]}
+  ],
+  "locations": [
+    {"id": "erzhan-loc-1", "name": "Точка 1"},
+    {"id": "erzhan-loc-2", "name": "Точка 2"}
+  ],
+  "staff": [
+    {"sender_id": "77000000001", "location_id": "erzhan-loc-1", "name": "Имя сотрудника"}
+  ]
+}

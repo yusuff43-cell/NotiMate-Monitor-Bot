@@ -46,6 +46,12 @@ def build_whatsapp_inbound_message(channel_row: Mapping[str, Any], message: Mapp
             or interactive.get('list_reply', {}).get('id')
             or ''
         )
+    media: list[dict[str, Any]] = []
+    if message.get('type') == 'image':
+        image = message.get('image', {})
+        if image.get('id'):
+            media.append({'kind': 'image', 'id': str(image['id']), 'mime_type': str(image.get('mime_type') or 'image/jpeg')})
+        text = str(image.get('caption') or '')
     received_at = None
     timestamp = message.get('timestamp')
     if timestamp:
@@ -61,5 +67,6 @@ def build_whatsapp_inbound_message(channel_row: Mapping[str, Any], message: Mapp
         sender_id=sender_id,
         sender_role='owner' if sender_id in owner_ids else 'staff',
         text=text,
+        media=tuple(media),
         received_at=received_at,
     )

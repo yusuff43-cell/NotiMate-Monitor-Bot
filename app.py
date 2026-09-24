@@ -34,6 +34,10 @@ from notimate.tenant_store import PostgresTenantStore
 from notimate.inbound_store import PostgresInboundStore
 from notimate.projections.operations_store import PostgresOperationsStore
 from notimate.packs.location_reports import PostgresLocationReportsStore, process_location_report_event, send_evening_summary as location_reports_evening_summary
+from notimate.packs.accountant.store import PostgresDocumentsStore
+from notimate.packs.accountant import flow as accountant_flow
+from notimate.dashboard.reader import PostgresDashboardReader
+from notimate.dashboard.routes import register_routes as register_dashboard_routes
 from event_store import PostgresEventStore
 from logging_utils import get_logger
 
@@ -104,6 +108,21 @@ if location_reports_store:
     except Exception as exc:
         logger.error('location_reports_store_init_failed', extra={'error_type': type(exc).__name__})
 
+# «Бухгалтер» (Этап 7): documents registry, numbering, accountant questions. Originals live
+# on the DOCUMENT_STORAGE_DIR volume (notimate/packs/accountant/storage.py).
+documents_store = PostgresDocumentsStore(DATABASE_URL) if DATABASE_URL else None
+DOCUMENTS_DB_ENABLED = False
+if documents_store:
+    try:
+        documents_store.initialize()
+        DOCUMENTS_DB_ENABLED = True
+    except Exception as exc:
+        logger.error('documents_store_init_failed', extra={'error_type': type(exc).__name__})
+
+# Подробный отчёт (Этап 8): read-only reader for GET /v1/owner-dashboard; the routes stay
+# inert (404) until DASHBOARD_LINK_SECRET and DASHBOARD_API_BASE are set in the environment.
+dashboard_reader = PostgresDashboardReader(DATABASE_URL) if DATABASE_URL else None
+
 WHATSAPP_SECRETS = json.loads(os.environ['WHATSAPP_SECRETS_JSON']) if os.environ.get('WHATSAPP_SECRETS_JSON') else {}
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.environ.get('WHATSAPP_WEBHOOK_VERIFY_TOKEN', '')
 # One Meta App secret verifies every tenant's webhook traffic (see whatsapp_channel_config's
@@ -171,6 +190,8 @@ from notimate.channels.line import (  # noqa: E402
     verify_signature,
 )
 from notimate.channels.whatsapp import (  # noqa: E402
+    download_media as whatsapp_download_media,
+    send_document as whatsapp_send_document,
     extract_messages as whatsapp_extract_messages,
     send_interactive_buttons as whatsapp_send_interactive_buttons,
     send_text as whatsapp_send_text,
@@ -215,6 +236,7 @@ from notimate.reports.summaries import (  # noqa: E402
     reminders_report,
     weekly_report,
 )
+from notimate.packs.accountant.flow import line_owner_command, process_accountant_event, register_line_document  # noqa: E402
 from notimate.pipeline import process_line_event, process_whatsapp_event  # noqa: E402
 
 
@@ -296,6 +318,9 @@ def whatsapp_webhook():
     return 'OK'
 
 
+register_dashboard_routes(app)
+
+
 @app.route("/health", methods=['GET'])
 def health():
     return {"status": "ok", "clients": len(CLIENTS), "sheets": SHEETS_ENABLED}, 200
@@ -320,7 +345,7 @@ try:
     scheduler = BackgroundScheduler(timezone=pytz.timezone('Asia/Bangkok'))
     for bot_id, cfg in CLIENTS.items():
         if cfg.get('sheet_id') and gc:
-            scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, args=[cfg], id=f"evening_{bot_id}")
+            scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, args=[cfg], kwargs={'tenant_id': bot_id}, id=f"evening_{bot_id}")
             scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, args=[cfg], id=f"weekly_{bot_id}")
     # «Отчёты точек» (Этап 6): 20:00 Asia/Almaty digest per WhatsApp tenant running that
     # pack, one job per configured owner. A per-job timezone works alongside the
@@ -336,12 +361,41 @@ try:
                 for owner_id in row['channel']['owner_ids'] or []:
                     scheduler.add_job(
                         location_reports_evening_summary, 'cron', hour=20, minute=0,
-                        timezone=pytz.timezone('Asia/Almaty'),
-                        args=[row['tenant']['id'], config['access_token'], config['phone_number_id'], owner_id],
+                        timezone=pytz.timezone(config.get('timezone') or 'Asia/Almaty'),
+                        args=[row['tenant']['id'], config['access_token'], config['phone_number_id'], owner_id, config.get('timezone')],
                         id=f"location_summary_{row['tenant']['id']}_{owner_id}",
                     )
         except Exception as exc:
             logger.warning('location_reports_scheduling_failed', extra={'error_type': type(exc).__name__})
+        # «Бухгалтер» (Этап 7): month package on the 1st at 09:00 and a Monday «не хватает»
+        # digest, both in the tenant's own timezone.
+        try:
+            for row in tenant_store.list_channels('whatsapp'):
+                tenant = row['tenant']
+                if not accountant_flow.module_enabled(tenant):
+                    continue
+                config = whatsapp_channel_config(row, WHATSAPP_SECRETS.get(row['channel']['secret_ref']))
+                if not config:
+                    continue
+                tz_name = config.get('timezone') or 'Asia/Almaty'
+                settings = accountant_flow.module_settings(tenant)
+                recipients = list(dict.fromkeys(
+                    [str(o) for o in config['owner_ids']] + [str(a) for a in settings.get('accountant_ids') or []]
+                ))
+                scheduler.add_job(
+                    accountant_flow.send_scheduled_package, 'cron', day=1, hour=9, minute=0,
+                    timezone=pytz.timezone(tz_name),
+                    args=[tenant, config['access_token'], config['phone_number_id'], recipients, tz_name],
+                    id=f"accountant_package_{tenant['id']}",
+                )
+                scheduler.add_job(
+                    accountant_flow.send_weekly_missing_digest, 'cron', day_of_week='mon', hour=10, minute=0,
+                    timezone=pytz.timezone(tz_name),
+                    args=[tenant, config['access_token'], config['phone_number_id'], [str(o) for o in config['owner_ids']], tz_name],
+                    id=f"accountant_digest_{tenant['id']}",
+                )
+        except Exception as exc:
+            logger.warning('accountant_scheduling_failed', extra={'error_type': type(exc).__name__})
     scheduler.start()
     logger.info('scheduler_started')
 except Exception as exc:

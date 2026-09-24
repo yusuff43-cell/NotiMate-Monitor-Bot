@@ -30,6 +30,19 @@ def almaty_date() -> str:
     return almaty_now().date().isoformat()
 
 
+def local_now(tz_name: str | None = None) -> dt.datetime:
+    """Current time in a tenant's own timezone (docs/21 rule 5: client time, not server time)."""
+    try:
+        tz = ZoneInfo(tz_name) if tz_name else ALMATY_TZ
+    except Exception:
+        tz = ALMATY_TZ
+    return dt.datetime.now(tz)
+
+
+def local_date(tz_name: str | None = None) -> str:
+    return local_now(tz_name).date().isoformat()
+
+
 def days_until(expiry: str, *, now: dt.datetime | None = None) -> int:
     """Return calendar days from Bangkok today to an ISO date."""
     expiry_date = dt.date.fromisoformat(str(expiry).strip()[:10])

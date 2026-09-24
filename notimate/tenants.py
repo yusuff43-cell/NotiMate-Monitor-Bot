@@ -104,6 +104,10 @@ def channel_row_to_client_cfg(row: Mapping[str, object], secret: Mapping[str, ob
         cfg['business_type'] = tenant['business_type']
     if tenant.get('custom_context'):
         cfg['custom_context'] = tenant['custom_context']
+    if tenant.get('country'):
+        cfg['country'] = tenant['country']
+    if tenant.get('modules'):
+        cfg['modules'] = tenant['modules']
     if channel.get('allowed_chats') is not None:
         cfg['allowed_group_ids'] = list(channel['allowed_chats'])
     return cfg

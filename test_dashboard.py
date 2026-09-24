@@ -1,0 +1,259 @@
+"""Этап 8: signed links, snapshot assembly, and the Flask routes' auth/tenant isolation.
+The PostgreSQL SQL itself is covered by test_dashboard_postgres.py (needs TEST_DATABASE_URL)."""
+
+import datetime as dt
+import importlib
+import io
+import json
+import os
+import unittest
+import zipfile
+from unittest.mock import Mock, patch
+
+os.environ.setdefault('OPENAI_API_KEY', 'test-key')
+os.environ.setdefault('GOOGLE_CREDENTIALS', '{}')
+os.environ.setdefault('DISABLE_SCHEDULER', '1')
+os.environ.setdefault('CLIENTS_JSON', json.dumps({
+    'Ubot': {
+        'channel_access_token': 'test-token',
+        'channel_secret': 'test-secret',
+        'owner_line_id': 'Uowner',
+        'sheet_id': 'test-sheet',
+    }
+}))
+
+app_module = importlib.import_module('app')
+
+from notimate.dashboard import links  # noqa: E402
+from notimate.dashboard.reader import build_snapshot  # noqa: E402
+
+SECRET = 'unit-test-secret'
+
+
+class LinkTests(unittest.TestCase):
+    def test_round_trip(self):
+        token = links.issue_token(SECRET, 't1', 'owner', 'link', 60, now=1000)
+        claims = links.verify_token(SECRET, token, 'link', now=1030)
+        self.assertEqual((claims['t'], claims['s']), ('t1', 'owner'))
+
+    def test_expired_wrong_scope_wrong_secret_and_tampered_are_rejected(self):
+        token = links.issue_token(SECRET, 't1', 'owner', 'link', 60, now=1000)
+        self.assertIsNone(links.verify_token(SECRET, token, 'link', now=1061))
+        self.assertIsNone(links.verify_token(SECRET, token, 'session', now=1010))
+        self.assertIsNone(links.verify_token('other', token, 'link', now=1010))
+        body, sig = token.split('.')
+        forged = links._b64(json.dumps({'t': 't2', 's': 'owner', 'sc': 'link', 'e': 9999999999}).encode()) + '.' + sig
+        self.assertIsNone(links.verify_token(SECRET, forged, 'link', now=1010))
+        for junk in ('', 'abc', 'a.b.c', body + '.'):
+            self.assertIsNone(links.verify_token(SECRET, junk, 'link', now=1010))
+
+    def test_link_token_cannot_be_used_as_session(self):
+        token = links.issue_token(SECRET, 't1', 'owner', 'link', 60)
+        self.assertIsNone(links.verify_token(SECRET, token, 'session'))
+
+    def test_unknown_scope_and_empty_secret_refuse_to_issue(self):
+        with self.assertRaises(ValueError):
+            links.issue_token(SECRET, 't', 's', 'admin', 10)
+        with self.assertRaises(ValueError):
+            links.issue_token('', 't', 's', 'link', 10)
+
+
+class FakeReader:
+    def daily_totals(self, tenant_id, start, end, location_pack):
+        self.args = (tenant_id, start, end, location_pack)
+        return {'2026-09-24': {'revenue': 1000.0, 'expenses': 300.0}, '2026-09-10': {'revenue': 500.0, 'expenses': 50.0}, '2026-08-30': {'revenue': 9999.0, 'expenses': 9999.0}}
+
+    def payments_for(self, tenant_id, day, location_pack):
+        return {'cash': 400.0, 'card': 500.0, 'qr': 100.0}
+
+    def critical_stock(self, tenant_id, since):
+        return [{'product': 'Лосось', 'amount': '1 кг', 'status': 'low'}]
+
+    def deadlines(self, tenant_id, today, days=14):
+        return []
+
+    def problems(self, tenant_id, since):
+        return []
+
+    def recent_operations(self, tenant_id, location_pack):
+        return []
+
+
+class SnapshotTests(unittest.TestCase):
+    def test_contract_shape_and_month_scoping(self):
+        now = dt.datetime(2026, 9, 24, 21, 0)
+        reader = FakeReader()
+        snap = build_snapshot(reader, {'id': 't1', 'country': 'KZ', 'timezone': 'Asia/Almaty', 'vertical_pack': None}, 'day', now)
+        for key in ('generatedAt', 'timezone', 'currency', 'period', 'today', 'month', 'payments', 'trend', 'criticalStock', 'deadlines', 'problems', 'recentOperations'):
+            self.assertIn(key, snap)
+        self.assertEqual(snap['currency'], 'KZT')
+        self.assertEqual(snap['today'], {'revenue': 1000.0, 'expenses': 300.0, 'result': 700.0})
+        # the 2026-08-30 row lies outside September and must not leak into the month total
+        self.assertEqual(snap['month'], {'revenue': 1500.0, 'expenses': 350.0, 'result': 1150.0})
+        self.assertEqual(len(snap['trend']), 14)
+        self.assertEqual(snap['trend'][-1]['date'], '2026-09-24')
+        self.assertEqual(snap['trend'][0]['revenue'], 0.0)
+        self.assertEqual([p['label'] for p in snap['payments']], ['cash', 'card', 'qr'])
+        self.assertEqual(reader.args[0], 't1')
+
+    def test_location_pack_flag_reaches_reader(self):
+        reader = FakeReader()
+        build_snapshot(reader, {'id': 'e', 'vertical_pack': 'location_reports'}, 'month', dt.datetime(2026, 9, 24))
+        self.assertTrue(reader.args[3])
+
+
+class RouteTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {'DASHBOARD_LINK_SECRET': SECRET, 'DASHBOARD_API_BASE': 'https://api.example', 'DASHBOARD_ORIGIN': 'https://dash.example', 'DASHBOARD_BASE_URL': 'https://dash.example/'})
+        env.start()
+        self.addCleanup(env.stop)
+        self.orig = {name: getattr(app_module, name) for name in ('tenant_store', 'TENANTS_DB_ENABLED', 'dashboard_reader', 'documents_store', 'DOCUMENTS_DB_ENABLED')}
+        self.addCleanup(lambda: [setattr(app_module, k, v) for k, v in self.orig.items()])
+        self.tenants = {
+            'a': {'id': 'a', 'name': 'A', 'country': 'KZ', 'timezone': 'Asia/Almaty', 'vertical_pack': 'location_reports', 'modules': {}, 'owner_ids': ['ownerA']},
+            'b': {'id': 'b', 'name': 'B', 'country': 'TH', 'timezone': 'Asia/Bangkok', 'vertical_pack': None, 'modules': {'accountant': {'accountant_ids': ['accB']}}, 'owner_ids': ['ownerB']},
+        }
+        store = Mock()
+        store.get_tenant.side_effect = lambda tid: self.tenants.get(tid)
+        app_module.tenant_store = store
+        app_module.TENANTS_DB_ENABLED = True
+        self.reader = FakeReader()
+        app_module.dashboard_reader = self.reader
+        self.client = app_module.app.test_client()
+
+    def login(self, tenant='a', subject='ownerA'):
+        token = links.issue_token(SECRET, tenant, subject, 'link', 60)
+        return self.client.get(f'/auth/link?t={token}')
+
+    def test_feature_is_off_without_secret(self):
+        with patch.dict(os.environ, {'DASHBOARD_LINK_SECRET': ''}):
+            self.assertEqual(self.client.get('/v1/owner-dashboard').status_code, 404)
+
+    def test_no_session_is_401(self):
+        response = self.client.get('/v1/owner-dashboard')
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+
+    def test_login_sets_httponly_cookie_and_api_returns_snapshot(self):
+        response = self.login()
+        self.assertEqual(response.status_code, 302)
+        cookie = response.headers['Set-Cookie']
+        self.assertIn('HttpOnly', cookie)
+        self.assertIn('Secure', cookie)
+        self.assertIn('SameSite=Lax', cookie)
+        self.assertNotIn('link', links.verify_token(SECRET, cookie.split('nm_session=')[1].split(';')[0], 'session')['sc'])
+        api = self.client.get('/v1/owner-dashboard?period=week', headers={'Origin': 'https://dash.example'})
+        self.assertEqual(api.status_code, 200)
+        self.assertEqual(api.headers['Cache-Control'], 'no-store')
+        self.assertEqual(api.headers['Access-Control-Allow-Origin'], 'https://dash.example')
+        self.assertEqual(api.headers['Access-Control-Allow-Credentials'], 'true')
+        self.assertEqual(api.get_json()['period'], 'week')
+        self.assertEqual(self.reader.args[0], 'a')
+
+    def test_other_origin_gets_no_cors_headers(self):
+        self.login()
+        api = self.client.get('/v1/owner-dashboard', headers={'Origin': 'https://evil.example'})
+        self.assertNotIn('Access-Control-Allow-Origin', api.headers)
+
+    def test_tenant_comes_only_from_session_never_from_query(self):
+        self.login()
+        self.client.get('/v1/owner-dashboard?tenant=b&tenant_id=b')
+        self.assertEqual(self.reader.args[0], 'a')
+
+    def test_subject_not_an_owner_cannot_log_in(self):
+        self.assertEqual(self.login('a', 'someone-else').status_code, 403)
+        self.assertEqual(self.login('missing', 'ownerA').status_code, 403)
+
+    def test_removed_owner_loses_existing_session(self):
+        self.login()
+        self.tenants['a']['owner_ids'] = []
+        self.assertEqual(self.client.get('/v1/owner-dashboard').status_code, 401)
+
+    def test_session_token_cannot_be_used_as_login_link_and_vice_versa(self):
+        session = links.issue_token(SECRET, 'a', 'ownerA', 'session', 60)
+        self.assertEqual(self.client.get(f'/auth/link?t={session}').status_code, 403)
+        link = links.issue_token(SECRET, 'a', 'ownerA', 'link', 60)
+        self.client.set_cookie('nm_session', link)
+        self.assertEqual(self.client.get('/v1/owner-dashboard').status_code, 401)
+
+    def test_invalid_period_is_400(self):
+        self.login()
+        self.assertEqual(self.client.get('/v1/owner-dashboard?period=year').status_code, 400)
+
+    def test_snapshot_failure_is_503_without_detail(self):
+        self.login()
+        self.reader.daily_totals = Mock(side_effect=RuntimeError('secret db detail'))
+        response = self.client.get('/v1/owner-dashboard')
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn('secret', response.get_data(as_text=True))
+
+    def test_package_download_for_owner_and_accountant_only(self):
+        store = Mock()
+        store.list_confirmed.return_value = []
+        store.list_operations.return_value = []
+        store.open_questions.return_value = []
+        app_module.documents_store = store
+        app_module.DOCUMENTS_DB_ENABLED = True
+        ok = self.client.get('/d/package?t=' + links.issue_token(SECRET, 'b', 'accB', 'package', 60, '2026-09'))
+        self.assertEqual(ok.status_code, 200)
+        self.assertIn('2026-09/реестр.csv', zipfile.ZipFile(io.BytesIO(ok.data)).namelist())
+        self.assertEqual(ok.headers['Cache-Control'], 'no-store')
+        stranger = self.client.get('/d/package?t=' + links.issue_token(SECRET, 'b', 'nobody', 'package', 60, '2026-09'))
+        self.assertEqual(stranger.status_code, 403)
+        bad_period = self.client.get('/d/package?t=' + links.issue_token(SECRET, 'b', 'ownerB', 'package', 60, '../../x'))
+        self.assertEqual(bad_period.status_code, 403)
+        wrong_scope = self.client.get('/d/package?t=' + links.issue_token(SECRET, 'b', 'ownerB', 'link', 60, '2026-09'))
+        self.assertEqual(wrong_scope.status_code, 403)
+
+    def test_owner_link_helpers_respect_pack_and_feature_flag(self):
+        from notimate.dashboard import routes
+        self.assertTrue(routes.owner_link(self.tenants['a'], 'ownerA').startswith('https://api.example/auth/link?t='))
+        self.assertIsNone(routes.owner_link(self.tenants['b'], 'ownerB'))  # not a dashboard pack, not opted in
+        opted_in = {**self.tenants['b'], 'modules': {'dashboard': {'enabled': True}}}
+        self.assertIsNotNone(routes.owner_link(opted_in, 'ownerB'))
+        with patch.dict(os.environ, {'DASHBOARD_LINK_SECRET': ''}):
+            self.assertIsNone(routes.owner_link(self.tenants['a'], 'ownerA'))
+
+
+class ReportsSourceTests(unittest.TestCase):
+    """REPORTS_SOURCE=postgres: evening summary reads the ledger, falls back to Sheets."""
+
+    def run_summary(self, env, reader):
+        from notimate.reports import summaries
+        sent = []
+        sheet = Mock()
+        sheet.worksheet.side_effect = Exception('no sheet in this test')
+        gc = Mock()
+        gc.open_by_key.return_value = sheet
+        orig_reader = getattr(app_module, 'dashboard_reader', None)
+        self.addCleanup(setattr, app_module, 'dashboard_reader', orig_reader)
+        app_module.dashboard_reader = reader
+        with patch.dict(os.environ, env), patch.object(app_module, 'gc', gc), \
+                patch.object(app_module, 'notify_owner', side_effect=lambda cfg, msg: sent.append(msg)), \
+                patch.object(summaries, 'upcoming_reminders', return_value=[]):
+            summaries.evening_summary({'sheet_id': 'x'}, tenant_id='t1')
+        return sent[0]
+
+    def test_postgres_source_is_used_when_switched_on(self):
+        today = dt.datetime.now(dt.timezone(dt.timedelta(hours=7))).date().isoformat()
+        reader = Mock()
+        reader.daily_totals.return_value = {today: {'revenue': 1234.0, 'expenses': 234.0}}
+        message = self.run_summary({'REPORTS_SOURCE': 'postgres'}, reader)
+        self.assertIn('Выручка сегодня: 1,234 THB', message)
+        self.assertIn('Расходы сегодня: 234 THB', message)
+
+    def test_default_source_ignores_postgres(self):
+        reader = Mock()
+        message = self.run_summary({'REPORTS_SOURCE': ''}, reader)
+        reader.daily_totals.assert_not_called()
+        self.assertIn('Выручка сегодня: 0 THB', message)
+
+    def test_postgres_failure_falls_back_to_sheets_path(self):
+        reader = Mock()
+        reader.daily_totals.side_effect = RuntimeError('db down')
+        message = self.run_summary({'REPORTS_SOURCE': 'postgres'}, reader)
+        self.assertIn('Вечерняя сводка', message)
+
+
+if __name__ == '__main__':
+    unittest.main()

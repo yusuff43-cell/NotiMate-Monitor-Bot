@@ -196,3 +196,31 @@ class PostgresTenantStore:
                 (channel,),
             ).fetchall()
         return [row for row in (self.find_channel(channel, r['external_id']) for r in rows) if row]
+
+    def get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
+        """Active tenant by id, with ``owner_ids`` merged across all its channels.
+
+        Used to re-authorize every dashboard/API request against current data instead of
+        trusting whatever a session token said when it was issued (removing an owner from
+        ``tenant_channels`` immediately cuts off their existing sessions).
+        """
+        with _driver()[0].connect(self.database_url, row_factory=_driver()[1]) as conn:
+            row = conn.execute(
+                """
+                SELECT id, name, country, timezone, owner_language, business_type,
+                       vertical_pack, modules, sheet_id, custom_context, status
+                FROM tenants WHERE id = %s AND status = 'active'
+                """,
+                (tenant_id,),
+            ).fetchone()
+            if not row:
+                return None
+            owners = conn.execute('SELECT owner_ids FROM tenant_channels WHERE tenant_id = %s', (tenant_id,)).fetchall()
+        tenant = dict(row)
+        merged: list[str] = []
+        for record in owners:
+            for owner in record['owner_ids'] or []:
+                if str(owner) not in merged:
+                    merged.append(str(owner))
+        tenant['owner_ids'] = merged
+        return tenant

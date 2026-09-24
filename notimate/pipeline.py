@@ -56,6 +56,12 @@ def process_line_event(destination, event):
             app.owner_menu(client_cfg)
         elif command in ['неделя', 'week', 'недельная']:
             app.weekly_report(client_cfg)
+        elif command:
+            # Opt-in extras (dashboard link, month package link): no-op unless the tenant enabled them.
+            try:
+                app.line_owner_command(destination, client_cfg, source.get('userId'), command)
+            except Exception as exc:
+                logger.warning('line_owner_extra_command_failed', extra={'error_type': type(exc).__name__})
         return
     msg = event.get('message', {})
     msg_type = msg.get('type')
@@ -139,6 +145,8 @@ def process_line_event(destination, event):
         logger.info('image_processing_started', extra={'event_id': event_id})
         try:
             content = blob_api.get_message_content(msg.get('id'))
+            # Opt-in document registry (Этап 7): no-op unless modules.accountant.enabled; never raises.
+            app.register_line_document(destination, client_cfg, event, content)
             image_data = base64.b64encode(content).decode('utf-8')
             result = app.analyze_image(image_data, client_cfg)
             if 'NOT_FINANCE' in result:
@@ -230,10 +238,15 @@ def process_whatsapp_event(phone_number_id, message):
     if not config:
         raise RuntimeError('WhatsApp channel config is incomplete')
     inbound = build_whatsapp_inbound_message(row, message)
-    if not inbound.text:
+    if not inbound.text and not inbound.media:
         return
     if row['tenant'].get('vertical_pack') == 'location_reports':
         app.process_location_report_event(row, config, inbound)
+        return
+    if row['tenant'].get('vertical_pack') == 'accountant':
+        app.process_accountant_event(row, config, inbound)
+        return
+    if not inbound.text:
         return
     app.whatsapp_send_text(
         config['access_token'], config['phone_number_id'], inbound.sender_id,

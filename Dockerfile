@@ -12,7 +12,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN chown -R app:app /app
+RUN mkdir -p /data/documents && chown -R app:app /app /data
+ENV DOCUMENT_STORAGE_DIR=/data/documents
 USER app
 
 EXPOSE 8080

@@ -51,6 +51,8 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+    volumes:
+      - documents_data:/data/documents
     mem_limit: 384m
     cpus: 0.30
 
@@ -60,8 +62,11 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-notimate}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-notimate_monitor}
       DISABLE_SCHEDULER: "1"
+    volumes:
+      - documents_data:/data/documents
     mem_limit: 384m
     cpus: 0.40
 
 volumes:
   postgres_data:
+  documents_data:
