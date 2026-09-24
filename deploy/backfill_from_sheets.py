@@ -56,8 +56,14 @@ def money(value) -> float:
 def plan(tab: str, rows: list[dict], currency: str) -> list[tuple[str, tuple]]:
     """Translate one tab's rows into ``(store_method, args-after-tenant)`` calls."""
     calls: list[tuple[str, tuple]] = []
+    last_day = None
     for number, row in enumerate(rows, start=2):
         day = parse_date(row.get('Дата') or row.get('Дата добавления'))
+        if tab in ('Закупки', 'Остатки'):
+            # These tabs write the date on the first row of a group only; the rows below
+            # belong to the same day until the next date appears.
+            day = day or last_day
+            last_day = day
         key = key_for(row, tab, number)
         if tab == 'Выручка' and day:
             details = {k: row.get(h) for k, h in (('cash', 'Наличные'), ('card', 'Карта'), ('qr', 'QR')) if row.get(h) not in (None, '')}
