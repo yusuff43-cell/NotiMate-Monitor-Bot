@@ -254,3 +254,36 @@ def build_snapshot(reader, tenant: dict[str, Any], period: str, now: dt.datetime
         'problems': reader.problems(tenant_id, today - dt.timedelta(days=7)),
         'recentOperations': reader.recent_operations(tenant_id, location_pack),
     }
+
+
+def build_group_snapshot(reader, tenants: list[dict[str, Any]], period: str, group_key: str, clock) -> dict[str, Any]:
+    """Consolidated view over the businesses of one owner group.
+
+    Each business is computed on its own (own timezone, own currency, own data); only then are
+    they put side by side. Money is summed ONLY within the same currency — a baht business and a
+    tenge business are never added together — and every line names its business.
+    """
+    businesses: list[dict[str, Any]] = []
+    totals: dict[str, dict[str, float]] = {}
+    for tenant in tenants:
+        snap = build_snapshot(reader, tenant, period, clock(tenant.get('timezone')))
+        currency = snap['currency']
+        businesses.append({
+            'id': tenant['id'], 'name': tenant.get('name') or tenant['id'], 'currency': currency, 'channels': snap['channels'],
+            'selected': snap['selected'], 'today': snap['today'], 'month': snap['month'], 'points': len(snap['locations']),
+        })
+        slot = totals.setdefault(currency, {'revenue': 0.0, 'expenses': 0.0, 'monthRevenue': 0.0, 'monthExpenses': 0.0})
+        slot['revenue'] += snap['selected']['revenue']
+        slot['expenses'] += snap['selected']['expenses']
+        slot['monthRevenue'] += snap['month']['revenue']
+        slot['monthExpenses'] += snap['month']['expenses']
+    return {
+        'group': group_key,
+        'period': period,
+        'businesses': businesses,
+        'totalsByCurrency': [
+            {'currency': cur, 'revenue': v['revenue'], 'expenses': v['expenses'], 'result': v['revenue'] - v['expenses'],
+             'monthRevenue': v['monthRevenue'], 'monthExpenses': v['monthExpenses'], 'monthResult': v['monthRevenue'] - v['monthExpenses']}
+            for cur, v in sorted(totals.items())
+        ],
+    }

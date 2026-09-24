@@ -44,6 +44,24 @@ class WorkerTests(unittest.TestCase):
         store.mark_failed.assert_called_once_with('evt-3', 'ValueError: bad payload')
         store.mark_retry.assert_not_called()
 
+    def test_terminal_failure_alerts_but_retries_do_not(self):
+        alert = Mock()
+        store = Mock()
+        with patch('worker.MAX_ATTEMPTS', 5), self.assertLogs('notimate', level='ERROR'):
+            store.claim_next.return_value = EventJob('evt-4', 'bot-1', {}, 2)
+            run_once(store, Mock(side_effect=RuntimeError('x')), alert)
+            alert.assert_not_called()
+            store.claim_next.return_value = EventJob('evt-5', 'bot-1', {}, 5)
+            run_once(store, Mock(side_effect=RuntimeError('x')), alert)
+        self.assertEqual(alert.call_args.args[0].webhook_event_id, 'evt-5')
+
+    def test_a_broken_alert_never_breaks_the_worker(self):
+        store = Mock()
+        store.claim_next.return_value = EventJob('evt-6', 'bot-1', {}, 5)
+        with patch('worker.MAX_ATTEMPTS', 5), self.assertLogs('notimate', level='ERROR'):
+            self.assertTrue(run_once(store, Mock(side_effect=RuntimeError('x')), Mock(side_effect=RuntimeError('alert down'))))
+        store.mark_failed.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -202,6 +202,7 @@ from notimate.channels.line import (  # noqa: E402
 from notimate.channels.whatsapp import (  # noqa: E402
     download_media as whatsapp_download_media,
     send_document as whatsapp_send_document,
+    send_proactive as whatsapp_send_proactive,
     extract_messages as whatsapp_extract_messages,
     send_interactive_buttons as whatsapp_send_interactive_buttons,
     send_text as whatsapp_send_text,
@@ -407,7 +408,7 @@ try:
                 def _make_notify(token=config['access_token'], pnid=config['phone_number_id'], owners=tuple(config['owner_ids'])):
                     def notify(body):
                         for owner in owners:
-                            whatsapp_send_text(token, pnid, owner, body)
+                            whatsapp_send_proactive(token, pnid, owner, body)
                     return notify
 
                 cfg = monitor_pack.build_cfg(row, config, _make_notify())
@@ -417,6 +418,14 @@ try:
                 scheduler.add_job(run_sheets_sync, 'cron', hour='7,19', minute=5, timezone=tz, args=[tenant['id'], cfg], id=f"sheets_sync_wa_{tenant['id']}")
         except Exception as exc:
             logger.warning('monitor_scheduling_failed', extra={'error_type': type(exc).__name__})
+        # Сводка по группам бизнесов одного владельца — 20:30 местного времени (один job на часовой пояс,
+        # какие группы существуют, определяется в момент запуска).
+        try:
+            from notimate.reports.group import send_group_summaries
+            for group_tz in ('Asia/Almaty', 'Asia/Bangkok'):
+                scheduler.add_job(send_group_summaries, 'cron', hour=20, minute=30, timezone=pytz.timezone(group_tz), args=[group_tz], id=f"group_summary_{group_tz}")
+        except Exception as exc:
+            logger.warning('group_summary_scheduling_failed', extra={'error_type': type(exc).__name__})
         # «Бухгалтер» (Этап 7): month package on the 1st at 09:00 and a Monday «не хватает»
         # digest, both in the tenant's own timezone.
         try:

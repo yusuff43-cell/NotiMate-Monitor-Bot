@@ -1,7 +1,7 @@
 'use strict';
 (function () {
   var root = document.getElementById('root');
-  var state = { period: (location.hash || '#day').slice(1), category: null, query: '', data: null };
+  var state = { period: (location.hash || '#day').slice(1), category: null, query: '', data: null, business: null, scope: 'business', businesses: [] };
   if (['day', 'week', 'month'].indexOf(state.period) < 0) state.period = 'day';
   var SYMBOLS = { THB: '฿', KZT: '₸', RUB: '₽', USD: '$', EUR: '€' };
   var CHANNELS = { line: 'LINE', whatsapp: 'WhatsApp', telegram: 'Telegram' };
@@ -139,21 +139,66 @@
       a.packageUrl ? h('a', { class: 'btn', href: a.packageUrl, text: 'Скачать пакет за ' + a.previousPeriod }) : null);
   }
 
+
+  function switcher() {
+    if (!state.businesses || state.businesses.length < 2) return null;
+    var select = h('select', { 'aria-label': 'Бизнес', class: 'chip', style: 'padding:6px 10px', onchange: function (e) {
+      var value = e.target.value;
+      state.category = null;
+      if (value === '__all__') { state.scope = 'group'; state.business = null; }
+      else { state.scope = 'business'; state.business = value; }
+      load();
+    } }, h('option', { value: '__all__', selected: state.scope === 'group' ? true : null, text: 'Все бизнесы' }),
+      state.businesses.map(function (b) { return h('option', { value: b.id, selected: state.scope !== 'group' && (state.business || state.anchor) === b.id ? true : null, text: b.name }); }));
+    return select;
+  }
+
+  function periodTabs() {
+    return h('div', { class: 'tabs', role: 'tablist' }, PERIODS.map(function (p) {
+      return h('button', { role: 'tab', 'aria-selected': state.period === p[0] ? 'true' : 'false', onclick: function () { state.period = p[0]; state.category = null; location.hash = p[0]; load(); }, text: p[1] });
+    }));
+  }
+
+  function renderGroup() {
+    var d = state.data;
+    var labels = { day: 'сегодня', week: 'за 7 дней', month: 'за месяц' };
+    var head = h('header', {}, h('h1', {}, 'Все бизнесы', h('small', { text: 'Группа «' + d.group + '» · ' + labels[state.period] })),
+      h('div', { class: 'chips' }, switcher(), h('button', { class: 'chip', type: 'button', onclick: load, text: 'Обновить' }), h('button', { class: 'chip', type: 'button', onclick: logout, text: 'Выйти' })), periodTabs());
+    var totals = (d.totalsByCurrency || []).map(function (t) {
+      return h('div', { class: 'card s4' }, h('h2', { text: 'Итого · ' + t.currency }),
+        h('div', { class: 'kpi', text: money(t.revenue, t.currency) }, h('small', { text: 'выручка ' + labels[state.period] })),
+        h('p', { text: 'Расходы: ' + money(t.expenses, t.currency) }),
+        h('p', { class: t.result >= 0 ? 'pos' : 'neg', text: 'Результат: ' + (t.result >= 0 ? '+' : '−') + money(Math.abs(t.result), t.currency) }),
+        h('p', { class: 'muted', text: 'Месяц: выручка ' + money(t.monthRevenue, t.currency) + ', расходы ' + money(t.monthExpenses, t.currency) }));
+    });
+    var table = h('div', { class: 'card' }, h('h2', { text: 'По бизнесам' }), h('div', { class: 'scroll' }, h('table', {},
+      h('thead', {}, h('tr', {}, ['Бизнес', 'Выручка', 'Расходы', 'Результат', 'За месяц'].map(function (t, i) { return h('th', { class: i ? 'num' : '', text: t }); }))),
+      h('tbody', {}, (d.businesses || []).map(function (b) {
+        var s = b.selected;
+        return h('tr', {}, h('td', {}, h('button', { class: 'chip', type: 'button', onclick: function () { state.scope = 'business'; state.business = b.id; load(); }, text: b.name }), ' ', (b.channels || []).map(function (c) { return h('span', { class: 'tag', text: CHANNELS[c] || c }); })),
+          h('td', { class: 'num', text: money(s.revenue, b.currency) }), h('td', { class: 'num', text: money(s.expenses, b.currency) }),
+          h('td', { class: 'num ' + (s.result >= 0 ? 'pos' : 'neg'), text: (s.result >= 0 ? '+' : '−') + money(Math.abs(s.result), b.currency) }),
+          h('td', { class: 'num', text: money(b.month.revenue, b.currency) }));
+      })))));
+    root.replaceChildren(head, h('div', { class: 'grid' }, totals, table), h('footer', { text: 'Суммы складываются только внутри одной валюты. Нажмите на название бизнеса, чтобы открыть его панель.' }));
+  }
+
   function render() {
     var d = state.data;
     if (!d) return;
+    if (d.totalsByCurrency) { state.businesses = (d.businesses || []).map(function (b) { return { id: b.id, name: b.name }; }); renderGroup(); return; }
+    if (d.group) { state.businesses = d.group.businesses; if (!state.anchor) state.anchor = state.business || (d.group.businesses[0] && d.group.businesses[0].id); }
     var sel = d.selected || {};
     var labels = { day: 'сегодня', week: 'за 7 дней', month: 'за месяц' };
     var head = h('header', {},
       h('h1', {}, d.tenantName || 'NotiMate', h('small', { text: 'Обновлено ' + new Date(d.generatedAt).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) + ' · ' + d.timezone })),
       h('div', { class: 'chips' },
+        switcher(),
         (d.channels || []).map(function (c) { return h('span', { class: 'chip', text: CHANNELS[c] || c }); }),
         d.sheetUrl ? h('a', { class: 'chip', href: d.sheetUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Таблица ↗' }) : null,
         h('button', { class: 'chip', type: 'button', onclick: load, text: 'Обновить' }),
         h('button', { class: 'chip', type: 'button', onclick: logout, text: 'Выйти' })),
-      h('div', { class: 'tabs', role: 'tablist' }, PERIODS.map(function (p) {
-        return h('button', { role: 'tab', 'aria-selected': state.period === p[0] ? 'true' : 'false', onclick: function () { state.period = p[0]; state.category = null; location.hash = p[0]; load(); }, text: p[1] });
-      })));
+      periodTabs());
     var grid = h('div', { class: 'grid' },
       kpi('Выручка ' + labels[state.period], money(sel.revenue, d.currency), fullDate(sel.from) + ' — ' + fullDate(sel.to)),
       kpi('Расходы ' + labels[state.period], money(sel.expenses, d.currency), 'Месяц: ' + money(d.month.expenses, d.currency)),
@@ -186,7 +231,7 @@
   }
 
   function load() {
-    fetch('/v1/owner-dashboard?period=' + state.period, { credentials: 'same-origin', headers: { Accept: 'application/json' } })
+    fetch('/v1/owner-dashboard?period=' + state.period + (state.scope === 'group' ? '&scope=group' : (state.business ? '&business=' + encodeURIComponent(state.business) : '')), { credentials: 'same-origin', headers: { Accept: 'application/json' } })
       .then(function (response) {
         if (response.status === 401) { state.data = null; notice('Нужна ссылка из чата', 'Отправьте боту слово «Дашборд» — придёт личная ссылка, которая действует 5 минут. После входа панель открывается на 12 часов.'); return null; }
         if (!response.ok) throw new Error('http ' + response.status);

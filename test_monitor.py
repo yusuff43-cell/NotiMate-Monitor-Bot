@@ -203,5 +203,99 @@ class SharedHandlerTests(unittest.TestCase):
         self.assertEqual(analyze.call_args.args[2], 'application/pdf')
 
 
+class ComposableModesTests(unittest.TestCase):
+    """One business, two modes: location employees report, everyone else uses the monitor."""
+
+    def setUp(self):
+        self.orig = app_module.location_reports_store
+        self.store = Mock()
+        app_module.location_reports_store = self.store
+        self.addCleanup(setattr, app_module, 'location_reports_store', self.orig)
+        self.row = {'tenant': {'id': 'cafe', 'vertical_pack': 'monitor', 'modules': {'extra_packs': ['location_reports']}}, 'channel': {}}
+
+    def pick(self, sender, text='x', role='staff'):
+        packs = pipeline.tenant_packs(self.row['tenant'])
+        return pipeline._pick_pack(self.row, SimpleNamespace(sender_id=sender, text=text, sender_role=role), packs)
+
+    def test_packs_listing(self):
+        self.assertEqual(pipeline.tenant_packs(self.row['tenant']), ['monitor', 'location_reports'])
+        self.assertEqual(pipeline.tenant_packs({'vertical_pack': 'monitor'}), ['monitor'])
+        self.assertEqual(pipeline.tenant_packs({'vertical_pack': 'bogus', 'modules': {'extra_packs': ['nope', 'accountant']}}), ['accountant'])
+        self.assertEqual(pipeline.tenant_packs({}), [])
+
+    def test_location_employee_goes_to_reports_others_to_monitor(self):
+        self.store.find_staff.side_effect = lambda tenant, sender: {'location_id': 'l1'} if sender == 'emp' else None
+        self.assertEqual(self.pick('emp', 'выручка 100'), 'location_reports')
+        self.assertEqual(self.pick('other', 'молоко 200'), 'monitor')
+        self.assertEqual(self.pick('owner1', 'выручка 100', role='owner'), 'monitor')
+
+    def test_report_buttons_and_owner_point_commands_go_to_reports(self):
+        self.store.find_staff.return_value = None
+        self.assertEqual(self.pick('x', 'report:confirm:abc'), 'location_reports')
+        for word in ('точки', '/кто не отчитался'):
+            self.assertEqual(self.pick('owner1', word, role='owner'), 'location_reports')
+
+    def test_single_mode_is_unchanged(self):
+        self.assertEqual(pipeline._pick_pack(self.row, SimpleNamespace(sender_id='x', text='y', sender_role='staff'), ['location_reports']), 'location_reports')
+        self.assertIsNone(pipeline._pick_pack(self.row, SimpleNamespace(sender_id='x', text='y', sender_role='staff'), []))
+
+    def test_location_staff_of_a_multi_mode_business_is_a_known_sender(self):
+        from notimate.access import sender_is_known
+        row = {**self.row, 'channel': {'owner_ids': [], 'allowed_chats': []}}
+        self.assertTrue(sender_is_known(row, 'emp', lambda t, s: {'x': 1}))
+        self.assertFalse(sender_is_known(row, 'emp', lambda t, s: None))
+
+
+class GroupSummaryAndAlertTests(unittest.TestCase):
+    def test_format_names_each_business_and_never_mixes_currencies(self):
+        from notimate.reports.group import format_group_summary
+        text = format_group_summary('erzhan', '24.09.2026', [
+            {'name': 'Кафе', 'currency': 'KZT', 'revenue': 50000, 'expenses': 12000},
+            {'name': 'Кофейня', 'currency': 'KZT', 'revenue': 30000, 'expenses': 5000},
+            {'name': 'Bangkok', 'currency': 'THB', 'revenue': 9000, 'expenses': 1000},
+        ])
+        self.assertIn('• Кафе: выручка 50\u00a0000\u00a0₸', text)
+        self.assertIn('Итого KZT: выручка 80\u00a0000\u00a0₸, расходы 17\u00a0000\u00a0₸, результат 63\u00a0000\u00a0₸', text)
+        self.assertIn('Итого THB: выручка 9\u00a0000\u00a0฿', text)
+
+    def test_only_owners_of_two_or_more_businesses_get_the_group_message_for_their_own_businesses(self):
+        from notimate.reports import group
+        tenants = [
+            {'id': 'a', 'name': 'Кафе', 'country': 'KZ', 'timezone': 'Asia/Almaty', 'owner_ids': ['boss', 'solo'], 'modules': {}},
+            {'id': 'b', 'name': 'Магазин', 'country': 'KZ', 'timezone': 'Asia/Almaty', 'owner_ids': ['boss'], 'modules': {}},
+        ]
+        store = Mock()
+        store.list_channels.return_value = [{'tenant': {'id': 'a'}, 'channel': {'secret_ref': 'REF', 'external_id': 'PN'}}]
+        store.list_groups.return_value = ['erz']
+        store.group_tenants.return_value = tenants
+        reader = Mock()
+        reader.daily_totals.return_value = {}
+        orig = (app_module.tenant_store, getattr(app_module, 'dashboard_reader', None), dict(app_module.WHATSAPP_SECRETS))
+        app_module.tenant_store, app_module.dashboard_reader = store, reader
+        app_module.WHATSAPP_SECRETS['REF'] = {'access_token': 'tok'}
+        self.addCleanup(lambda: (setattr(app_module, 'tenant_store', orig[0]), setattr(app_module, 'dashboard_reader', orig[1]), app_module.WHATSAPP_SECRETS.clear(), app_module.WHATSAPP_SECRETS.update(orig[2])))
+        with patch.object(app_module, 'whatsapp_send_proactive') as send:
+            self.assertEqual(group.send_group_summaries('Asia/Bangkok'), 0)  # other timezone: nothing
+            self.assertEqual(group.send_group_summaries('Asia/Almaty'), 1)
+        self.assertEqual(send.call_args.args[2], 'boss')  # 'solo' owns one business -> no group message
+        self.assertIn('Кафе', send.call_args.args[3])
+        self.assertIn('Магазин', send.call_args.args[3])
+
+    def test_operator_alert_is_content_free_and_goes_to_operators(self):
+        from notimate.operator import alert_operator
+        store = Mock()
+        store.list_channels.return_value = [{'tenant': {'id': 'a'}, 'channel': {'secret_ref': 'REF', 'external_id': 'PN'}}]
+        orig = (app_module.tenant_store, dict(app_module.WHATSAPP_SECRETS))
+        app_module.tenant_store = store
+        app_module.WHATSAPP_SECRETS['REF'] = {'access_token': 'tok'}
+        self.addCleanup(lambda: (setattr(app_module, 'tenant_store', orig[0]), app_module.WHATSAPP_SECRETS.clear(), app_module.WHATSAPP_SECRETS.update(orig[1])))
+        with patch.dict(os.environ, {'OPERATOR_WHATSAPP_IDS': 'op1'}), patch.object(app_module, 'whatsapp_send_proactive') as send:
+            alert_operator(SimpleNamespace(webhook_event_id='evt-9'), ValueError('секретный текст клиента'))
+        message = send.call_args.args[3]
+        self.assertIn('evt-9', message)
+        self.assertIn('ValueError', message)
+        self.assertNotIn('секретный', message)
+
+
 if __name__ == '__main__':
     unittest.main()

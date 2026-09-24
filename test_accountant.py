@@ -297,6 +297,7 @@ class DispatchTests(unittest.TestCase):
         app_module.documents_store = self.store
         app_module.DOCUMENTS_DB_ENABLED = True
         self.send_text = patch.object(app_module, 'whatsapp_send_text').start()
+        patch.object(app_module, 'whatsapp_send_proactive', self.send_text).start()
         self.send_buttons = patch.object(app_module, 'whatsapp_send_interactive_buttons').start()
         self.send_doc = patch.object(app_module, 'whatsapp_send_document').start()
         self.download = patch.object(app_module, 'whatsapp_download_media', return_value=(b'img', 'image/jpeg')).start()

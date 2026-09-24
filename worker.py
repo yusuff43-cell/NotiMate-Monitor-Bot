@@ -15,7 +15,7 @@ RETENTION_CLEANUP_SECONDS = float(os.environ.get('RETENTION_CLEANUP_SECONDS', '8
 logger = get_logger()
 
 
-def run_once(store, processor: Callable[[str, dict], None]) -> bool:
+def run_once(store, processor: Callable[[str, dict], None], on_failed: Callable[[EventJob, Exception], None] | None = None) -> bool:
     job: EventJob | None = store.claim_next()
     if job is None:
         return False
@@ -27,6 +27,11 @@ def run_once(store, processor: Callable[[str, dict], None]) -> bool:
         logger.exception('event_failed', extra={'event_id': job.webhook_event_id, 'attempt': job.attempts, 'error_type': type(exc).__name__})
         if job.attempts >= MAX_ATTEMPTS:
             store.mark_failed(job.webhook_event_id, error)
+            if on_failed is not None:
+                try:
+                    on_failed(job, exc)
+                except Exception:
+                    logger.warning('failure_alert_failed')
         else:
             store.mark_retry(job.webhook_event_id, error, job.attempts)
     else:
@@ -43,6 +48,7 @@ def main() -> None:
     os.environ['DISABLE_SCHEDULER'] = '1'
     import app
     from app import process_line_event, process_whatsapp_event
+    from notimate.operator import alert_operator
 
     # WhatsApp reuses run_once against its own inbound_events queue (notimate/inbound_store.py)
     # so the LINE claim/process/retry loop above stays completely unchanged; app.py already
@@ -71,8 +77,8 @@ def main() -> None:
                 except Exception as exc:
                     logger.warning('whatsapp_retention_cleanup_failed', extra={'error_type': type(exc).__name__})
             next_retention_cleanup = now + RETENTION_CLEANUP_SECONDS
-        processed = run_once(store, process_line_event)
-        if whatsapp_store and run_once(whatsapp_store, process_whatsapp_event):
+        processed = run_once(store, process_line_event, alert_operator)
+        if whatsapp_store and run_once(whatsapp_store, process_whatsapp_event, alert_operator):
             processed = True
         if not processed:
             time.sleep(POLL_SECONDS)

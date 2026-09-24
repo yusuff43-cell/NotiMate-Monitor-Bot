@@ -12,7 +12,7 @@ from notimate.access import request_access, sender_is_known
 from notimate.inbound import build_whatsapp_inbound_message
 from notimate.projections.sheets import _money
 from notimate.packs.accountant.markers import document_marker
-from notimate.tenants import cfg_currency, is_group_allowed
+from notimate.tenants import cfg_currency, is_group_allowed, tenant_packs
 from notimate.timeutil import local_now
 
 logger = get_logger()
@@ -256,6 +256,31 @@ def handle_image(destination, client_cfg, event_id, content, mime='image/jpeg'):
         raise RuntimeError(f"Image handler error: {e}") from e
 
 
+LOCATION_OWNER_WORDS = ('точки', 'кто не отчитался', 'не отчитались', 'кто не сдал', 'missing')
+
+
+def _pick_pack(row, inbound, packs):
+    """Which mode handles this message. A business with one mode is simple. A business with
+    «Монитор» + «Отчёты точек» sends location employees' messages to the daily-report flow and
+    everyone else's (owner, other staff) to the monitor — plus the report buttons and the owner's
+    «точки» / «кто не отчитался» commands."""
+    if len(packs) <= 1:
+        return packs[0] if packs else None
+    if 'location_reports' in packs and 'monitor' in packs:
+        text = inbound.text.strip()
+        if text.startswith('report:') or text.lower().lstrip('/') in LOCATION_OWNER_WORDS:
+            return 'location_reports'
+        store = app.location_reports_store
+        if inbound.sender_role != 'owner' and store is not None:
+            try:
+                if store.find_staff(row['tenant']['id'], inbound.sender_id):
+                    return 'location_reports'
+            except Exception:
+                pass
+        return 'monitor'
+    return packs[0]
+
+
 def process_whatsapp_event(phone_number_id, message):
     """Process one inbound WhatsApp message claimed by the durable worker.
 
@@ -279,19 +304,21 @@ def process_whatsapp_event(phone_number_id, message):
     inbound = build_whatsapp_inbound_message(row, message)
     if not inbound.text and not inbound.media:
         return
-    if row['tenant'].get('vertical_pack') in ('location_reports', 'accountant', 'monitor'):
+    packs = tenant_packs(row['tenant'])
+    if packs:
         staff_lookup = app.location_reports_store.find_staff if app.location_reports_store else None
         if not sender_is_known(row, inbound.sender_id, staff_lookup):
             # Unknown number: nothing is processed until the operator approves the request.
             request_access(row, config, inbound)
             return
-    if row['tenant'].get('vertical_pack') == 'location_reports':
+    pack = _pick_pack(row, inbound, packs)
+    if pack == 'location_reports':
         app.process_location_report_event(row, config, inbound)
         return
-    if row['tenant'].get('vertical_pack') == 'accountant':
+    if pack == 'accountant':
         app.process_accountant_event(row, config, inbound)
         return
-    if row['tenant'].get('vertical_pack') == 'monitor':
+    if pack == 'monitor':
         app.process_monitor_event(row, config, inbound)
         return
     if not inbound.text:

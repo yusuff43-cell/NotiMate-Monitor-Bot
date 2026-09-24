@@ -149,3 +149,19 @@ def whatsapp_channel_config(row: Mapping[str, object], secret: Mapping[str, obje
 def cfg_currency(client_cfg: Mapping[str, object]) -> str:
     """Currency label for messages, ledger rows and Sheets headers; THB unless the tenant says otherwise."""
     return str(client_cfg.get("currency") or "THB")
+
+
+KNOWN_PACKS = ("monitor", "location_reports", "accountant")
+
+
+def tenant_packs(tenant: Mapping[str, object]) -> list[str]:
+    """The business's modes: its primary ``vertical_pack`` plus ``modules.extra_packs``."""
+    packs: list[str] = []
+    primary = tenant.get("vertical_pack")
+    if isinstance(primary, str) and primary in KNOWN_PACKS:
+        packs.append(primary)
+    modules = tenant.get("modules")
+    extras = modules.get("extra_packs") if isinstance(modules, Mapping) else None
+    if isinstance(extras, (list, tuple)):
+        packs += [p for p in extras if isinstance(p, str) and p in KNOWN_PACKS and p not in packs]
+    return packs

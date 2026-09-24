@@ -105,7 +105,8 @@ def sender_is_known(row: Mapping[str, Any], sender_id: str, staff_lookup=None) -
     known |= {str(a) for a in accountant.get('accountant_ids') or []}
     if sender_id in known:
         return True
-    if row['tenant'].get('vertical_pack') == 'location_reports' and staff_lookup is not None:
+    from notimate.tenants import tenant_packs
+    if 'location_reports' in tenant_packs(row['tenant']) and staff_lookup is not None:
         try:
             return bool(staff_lookup(row['tenant']['id'], sender_id))
         except Exception:
@@ -134,7 +135,7 @@ def request_access(row: Mapping[str, Any], config: Mapping[str, Any], inbound) -
         return
     for operator in [o.strip() for o in os.environ.get('OPERATOR_WHATSAPP_IDS', '').split(',') if o.strip()]:
         try:
-            app.whatsapp_send_text(
+            app.whatsapp_send_proactive(
                 token, pnid, operator,
                 f"🆕 Заявка на доступ №{request_id}: +{inbound.sender_id} → {row['tenant'].get('name') or row['tenant']['id']}\n«{text[:200]}»\n"
                 f"Одобрить: python deploy/access_requests.py approve {request_id} --role staff",
@@ -219,7 +220,7 @@ def request_access_shared(phone_number_id: str, config: Mapping[str, Any], sende
         pass
     for operator in [o.strip() for o in os.environ.get('OPERATOR_WHATSAPP_IDS', '').split(',') if o.strip()]:
         try:
-            app.whatsapp_send_text(
+            app.whatsapp_send_proactive(
                 token, phone_number_id, operator,
                 f"🆕 Заявка #{request_id}: +{sender_id}\n«{text[:200]}»\nОдобрить: одобрить {request_id} <id клиента> [сотрудник|владелец|бухгалтер]\n\nКлиенты:\n{listing}",
             )

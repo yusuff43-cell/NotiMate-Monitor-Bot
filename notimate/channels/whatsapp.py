@@ -238,3 +238,52 @@ def send_document(
     if caption:
         document['caption'] = caption
     return _post(access_token, phone_number_id, {'to': recipient, 'type': 'document', 'document': document})
+
+
+# ── proactive messages outside the 24-hour window ───────────────────────────────────────
+
+# Meta refuses free-form text 24 h after the customer's last message (error 131047 "Re-engagement
+# message"); only an approved template may open the conversation again.
+WINDOW_ERROR_MARKERS = ('131047', 're-engagement', 'Re-engagement')
+
+
+def _template_text(body: str) -> str:
+    """Template variables may not contain newlines/tabs or long space runs (Meta rule)."""
+    flat = ' | '.join(part.strip() for part in body.replace('\t', ' ').splitlines() if part.strip())
+    return ' '.join(flat.split(' '))[:1000] or '—'
+
+
+def send_template(access_token: str, phone_number_id: str, recipient: str, name: str, language: str, body: str) -> dict:
+    """Send an approved utility template whose body has ONE variable ({{1}}) carrying the text."""
+    return _post(access_token, phone_number_id, {
+        'to': recipient,
+        'type': 'template',
+        'template': {
+            'name': name,
+            'language': {'code': language},
+            'components': [{'type': 'body', 'parameters': [{'type': 'text', 'text': _template_text(body)}]}],
+        },
+    })
+
+
+def fallback_template(environ: dict | None = None) -> tuple[str, str] | None:
+    """``WHATSAPP_FALLBACK_TEMPLATE=name:lang`` (e.g. ``notimate_update:ru``) or None when unset."""
+    import os
+    raw = ((environ or os.environ).get('WHATSAPP_FALLBACK_TEMPLATE') or '').strip()
+    if not raw:
+        return None
+    name, _, language = raw.partition(':')
+    return (name, language or 'ru') if name else None
+
+
+def send_proactive(access_token: str, phone_number_id: str, recipient: str, body: str) -> dict:
+    """For bot-initiated messages (summaries, digests, package, alerts): free text first, and if
+    WhatsApp says the 24-hour window is closed, the configured template instead. Without a
+    configured template the original error is raised so callers still log the failure."""
+    try:
+        return send_text(access_token, phone_number_id, recipient, body)
+    except RuntimeError as exc:
+        template = fallback_template()
+        if template is None or not any(marker in str(exc) for marker in WINDOW_ERROR_MARKERS):
+            raise
+        return send_template(access_token, phone_number_id, recipient, template[0], template[1], body)

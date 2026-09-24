@@ -405,3 +405,42 @@ class PostgresTenantStore:
         with _driver()[0].connect(self.database_url, row_factory=_driver()[1]) as conn:
             rows = conn.execute("SELECT id, name, country, vertical_pack FROM tenants WHERE status = 'active' ORDER BY name").fetchall()
         return [dict(row) for row in rows]
+
+    def patch_tenant(self, tenant_id: str, *, name: str | None = None, sheet_id: str | None = None,
+                     vertical_pack: str | None = None, modules_patch: dict[str, Any] | None = None) -> bool:
+        """Change a few fields of an existing tenant; ``modules_patch`` is merged key by key."""
+        with _driver()[0].connect(self.database_url) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tenants SET
+                    name = COALESCE(%s, name), sheet_id = COALESCE(%s, sheet_id),
+                    vertical_pack = COALESCE(%s, vertical_pack),
+                    modules = modules || %s::jsonb, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (name, sheet_id, vertical_pack, json.dumps(modules_patch or {}, ensure_ascii=False), tenant_id),
+            )
+            return cursor.rowcount == 1
+
+    def group_tenants(self, group_key: str, subject: str | None = None) -> list[dict[str, Any]]:
+        """Active businesses of one group (``modules.group``). With ``subject`` only those the
+        person OWNS — a dashboard/summary can never show a business the viewer isn't an owner of."""
+        with _driver()[0].connect(self.database_url) as conn:
+            ids = [r[0] for r in conn.execute(
+                """
+                SELECT t.id FROM tenants t
+                WHERE t.status = 'active' AND t.modules->>'group' = %s
+                  AND (%s::text IS NULL
+                       OR EXISTS (SELECT 1 FROM tenant_channels c WHERE c.tenant_id = t.id AND c.owner_ids @> to_jsonb(%s::text))
+                       OR EXISTS (SELECT 1 FROM tenant_members m WHERE m.tenant_id = t.id AND m.role = 'owner' AND m.sender_id = %s))
+                ORDER BY t.name
+                """,
+                (group_key, subject, subject, subject),
+            ).fetchall()]
+        return [t for t in (self.get_tenant(i) for i in ids) if t]
+
+    def list_groups(self) -> list[str]:
+        with _driver()[0].connect(self.database_url) as conn:
+            return [r[0] for r in conn.execute(
+                "SELECT DISTINCT modules->>'group' FROM tenants WHERE status = 'active' AND modules ? 'group' AND modules->>'group' <> ''"
+            ).fetchall()]

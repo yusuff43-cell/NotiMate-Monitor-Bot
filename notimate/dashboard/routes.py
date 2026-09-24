@@ -175,15 +175,39 @@ def register_routes(flask_app) -> None:
         reader = getattr(app, 'dashboard_reader', None)
         if reader is None:
             return _no_store(jsonify({'error': 'unavailable'})), 503
+        subject = claims['s']
+        # Owner groups: a person who owns several businesses (same ``modules.group``) may look at
+        # any of them or at all together. Only businesses THEY own are ever offered or served.
+        group_key = (tenant.get('modules') or {}).get('group') if isinstance(tenant.get('modules'), dict) else None
+        owned = []
+        if group_key:
+            try:
+                owned = app.tenant_store.group_tenants(group_key, subject)
+            except Exception:
+                owned = []
+        owned_by_id = {t['id']: t for t in owned}
+        business = request.args.get('business')
+        if business and business != tenant['id']:
+            target = owned_by_id.get(business)
+            if target is None:
+                return _no_store(jsonify({'error': 'forbidden'})), 403
+            tenant = target
         try:
+            if request.args.get('scope') == 'group':
+                if len(owned) < 2:
+                    return _no_store(jsonify({'error': 'no_group'})), 404
+                from notimate.dashboard.reader import build_group_snapshot
+                return _no_store(jsonify(build_group_snapshot(reader, owned, period, group_key, local_now)))
             now = local_now(tenant.get('timezone'))
             try:
-                accounting = _accounting_block(tenant, claims['s'], now)
+                accounting = _accounting_block(tenant, subject, now)
             except Exception as exc:
                 from logging_utils import get_logger
                 get_logger().warning('dashboard_accounting_failed', extra={'error_type': type(exc).__name__})
                 accounting = {'available': False}
             snapshot = build_snapshot(reader, tenant, period, now, accounting)
+            if len(owned) >= 2:
+                snapshot['group'] = {'key': group_key, 'businesses': [{'id': t['id'], 'name': t.get('name') or t['id']} for t in owned]}
         except Exception as exc:
             from logging_utils import get_logger
             get_logger().error('dashboard_snapshot_failed', extra={'error_type': type(exc).__name__})

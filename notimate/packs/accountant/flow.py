@@ -150,7 +150,7 @@ def deliver_package_whatsapp(
     data, summary = build_package_for(store, tenant, period)
     filename = f"{tenant['id']}-{period}.zip"
     for recipient in recipients:
-        app.whatsapp_send_text(access_token, phone_number_id, recipient, summary)
+        app.whatsapp_send_proactive(access_token, phone_number_id, recipient, summary)
         app.whatsapp_send_document(access_token, phone_number_id, recipient, filename, 'application/zip', data, f'Пакет за {period}')
     emails = module_settings(tenant).get('emails') or []
     try:
@@ -190,7 +190,7 @@ def send_weekly_missing_digest(tenant: Mapping[str, Any], access_token: str, pho
         if not findings:
             return
         for owner_id in owner_ids:
-            app.whatsapp_send_text(access_token, phone_number_id, owner_id, summarize_findings(findings))
+            app.whatsapp_send_proactive(access_token, phone_number_id, owner_id, summarize_findings(findings))
     except Exception as exc:
         get_logger().warning('accountant_digest_failed', extra={'error_type': type(exc).__name__})
 

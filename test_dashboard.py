@@ -91,6 +91,19 @@ class FakeReader:
         return [{'id': 'l1', 'name': 'Точка 1', 'revenue': 900, 'cash': 400, 'non_cash': 500, 'payouts': 50, 'reports': 2}]
 
 
+class GroupSnapshotTests(unittest.TestCase):
+    def test_totals_are_summed_per_currency_only(self):
+        from notimate.dashboard.reader import build_group_snapshot
+        tenants = [{'id': 'k1', 'name': 'Кафе', 'country': 'KZ'}, {'id': 'k2', 'name': 'Кофейня', 'country': 'KZ'}, {'id': 't1', 'name': 'Bangkok', 'country': 'TH'}]
+        snap = build_group_snapshot(FakeReader(), tenants, 'day', 'erz', lambda tz: dt.datetime(2026, 9, 24, 21, 0))
+        by_currency = {t['currency']: t for t in snap['totalsByCurrency']}
+        self.assertEqual(set(by_currency), {'KZT', 'THB'})
+        self.assertEqual(by_currency['KZT']['revenue'], 2000.0)  # two KZT businesses summed
+        self.assertEqual(by_currency['THB']['revenue'], 1000.0)  # baht kept apart
+        self.assertEqual(by_currency['KZT']['result'], 2000.0 - 600.0)
+        self.assertEqual([b['name'] for b in snap['businesses']], ['Кафе', 'Кофейня', 'Bangkok'])
+
+
 class CategoryTests(unittest.TestCase):
     def test_keyword_rules_and_fallback(self):
         from notimate.dashboard.categories import categorize
@@ -293,6 +306,41 @@ class RouteTests(unittest.TestCase):
         self.tenants['a']['modules'] = {}
         self.login('a', 'ownerA')
         self.assertIsNone(self.client.get('/v1/owner-dashboard').get_json()['accounting'])
+
+    def enable_group(self):
+        self.tenants['a']['modules'] = {'group': 'erz'}
+        self.tenants['b']['modules'] = {'group': 'erz'}
+        self.tenants['a']['owner_ids'] = ['boss']
+        self.tenants['b']['owner_ids'] = ['boss', 'ownerB']
+        self.tenants['a']['name'], self.tenants['b']['name'] = 'Кафе', 'Магазин'
+        app_module.tenant_store.group_tenants.side_effect = lambda group, subject=None: [
+            t for t in self.tenants.values() if (t.get('modules') or {}).get('group') == group and (subject is None or subject in t['owner_ids'])]
+
+    def test_group_owner_can_switch_business_and_sees_all(self):
+        self.enable_group()
+        self.login('a', 'boss')
+        snap = self.client.get('/v1/owner-dashboard').get_json()
+        self.assertEqual([b['id'] for b in snap['group']['businesses']], ['a', 'b'])
+        self.assertEqual(snap['tenantName'], 'Кафе')
+        other = self.client.get('/v1/owner-dashboard?business=b').get_json()
+        self.assertEqual((other['tenantName'], other['currency']), ('Магазин', 'THB'))
+        everything = self.client.get('/v1/owner-dashboard?scope=group&period=week').get_json()
+        self.assertEqual({b['id']: b['currency'] for b in everything['businesses']}, {'a': 'KZT', 'b': 'THB'})
+        self.assertEqual(sorted(t['currency'] for t in everything['totalsByCurrency']), ['KZT', 'THB'])  # never mixed into one total
+
+    def test_person_who_owns_one_business_of_the_group_sees_only_that_one(self):
+        self.enable_group()
+        self.login('b', 'ownerB')
+        snap = self.client.get('/v1/owner-dashboard').get_json()
+        self.assertNotIn('group', snap)  # owns just one business of the group -> no switcher
+        self.assertEqual(self.client.get('/v1/owner-dashboard?business=a').status_code, 403)
+        self.assertEqual(self.client.get('/v1/owner-dashboard?scope=group').status_code, 404)
+
+    def test_business_outside_the_group_is_forbidden_even_for_an_owner_of_both(self):
+        self.enable_group()
+        self.tenants['c'] = {'id': 'c', 'name': 'Чужой', 'country': 'KZ', 'timezone': 'Asia/Almaty', 'vertical_pack': None, 'modules': {}, 'owner_ids': ['boss']}
+        self.login('a', 'boss')
+        self.assertEqual(self.client.get('/v1/owner-dashboard?business=c').status_code, 403)
 
     def test_owner_link_helpers_respect_pack_and_feature_flag(self):
         from notimate.dashboard import routes

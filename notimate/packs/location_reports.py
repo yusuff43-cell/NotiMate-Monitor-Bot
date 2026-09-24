@@ -343,7 +343,7 @@ def format_missing_report(all_locations: list[dict[str, Any]], reported_ids: set
     return '🔴 Ещё не отчитались: ' + ', '.join(missing)
 
 
-OWNER_SUMMARY_COMMANDS = ('сводка', 'свод', 'summary')
+OWNER_SUMMARY_COMMANDS = ('сводка', 'свод', 'summary', 'точки')
 OWNER_MISSING_COMMANDS = ('кто не отчитался', 'не отчитались', 'кто не сдал', 'missing')
 OWNER_HELP_COMMANDS = ('помощь', 'справка', 'help')
 OWNER_DASHBOARD_COMMANDS = ('подробный отчёт', 'подробный отчет', 'дашборд', 'dashboard', 'report')
@@ -513,7 +513,7 @@ def send_evening_summary(tenant_id: str, access_token: str, phone_number_id: str
         today = local_date(timezone)
         reports = store.reports_for_date(tenant_id, today)
         locations = store.list_locations(tenant_id)
-        app.whatsapp_send_text(access_token, phone_number_id, owner_id, format_summary(reports, locations, today))
+        app.whatsapp_send_proactive(access_token, phone_number_id, owner_id, format_summary(reports, locations, today))
     except Exception as exc:
         from logging_utils import get_logger
         get_logger().warning('location_reports_evening_summary_failed', extra={'error_type': type(exc).__name__})

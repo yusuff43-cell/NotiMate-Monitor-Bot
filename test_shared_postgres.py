@@ -85,6 +85,25 @@ class SharedNumberPostgresTests(unittest.TestCase):
         self.assertEqual(ids, sorted([self.a, self.b]))
         self.assertTrue(all(r['channel'].get('shared') for r in self.store.list_channels('whatsapp') if r['channel']['external_id'] == self.pn))
 
+    def test_group_membership_only_lists_businesses_the_person_owns(self):
+        self.assertTrue(self.store.patch_tenant(self.a, modules_patch={'group': 'g-' + self.suffix}))
+        self.assertTrue(self.store.patch_tenant(self.b, modules_patch={'group': 'g-' + self.suffix, 'extra': 1}))
+        self.assertFalse(self.store.patch_tenant('no-such', name='x'))
+        self.store.add_member(self.a, self.pn, '7001', 'owner')
+        self.store.add_member(self.b, self.pn, '7001', 'owner')
+        self.store.add_member(self.b, self.pn, '7002', 'owner')
+        self.store.add_member(self.a, self.pn, '7003', 'staff')
+        group = 'g-' + self.suffix
+        self.assertEqual(sorted(t['id'] for t in self.store.group_tenants(group, '7001')), sorted([self.a, self.b]))
+        self.assertEqual([t['id'] for t in self.store.group_tenants(group, '7002')], [self.b])  # owns one of two
+        self.assertEqual(self.store.group_tenants(group, '7003'), [])  # staff is not an owner
+        self.assertEqual(len(self.store.group_tenants(group)), 2)
+        self.assertIn(group, self.store.list_groups())
+        self.assertEqual(self.store.get_tenant(self.b)['modules']['extra'], 1)  # patch merged, not replaced
+        self.store.patch_tenant(self.a, vertical_pack='location_reports', sheet_id='SHEET', modules_patch={'extra_packs': ['monitor']})
+        tenant = self.store.get_tenant(self.a)
+        self.assertEqual((tenant['vertical_pack'], tenant['sheet_id'], tenant['modules']['group']), ('location_reports', 'SHEET', group))
+
     def test_make_number_shared_moves_owner_staff_and_location_staff(self):
         dedicated = 'dedicated-' + self.suffix
         self.store.upsert_channel({'tenant_id': self.b, 'channel': 'whatsapp', 'external_id': dedicated, 'secret_ref': 'REF2', 'owner_ids': ['8001'], 'allowed_chats': ['8002']})

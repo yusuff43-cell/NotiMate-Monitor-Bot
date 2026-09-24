@@ -52,6 +52,7 @@ class KnownSenderTests(unittest.TestCase):
 class GateTests(unittest.TestCase):
     def setUp(self):
         self.send = patch.object(app_module, 'whatsapp_send_text').start()
+        patch.object(app_module, 'whatsapp_send_proactive', self.send).start()  # bot-initiated pings share the mock
         self.access_store = Mock()
         self.orig_store = app_module.access_store
         app_module.access_store = self.access_store
@@ -176,6 +177,7 @@ class SharedRoutingTests(unittest.TestCase):
         app_module.access_store.submit.return_value = (9, True)
         app_module.WHATSAPP_SECRETS['PN'] = {'access_token': 'tok'}
         self.send = patch.object(app_module, 'whatsapp_send_text').start()
+        patch.object(app_module, 'whatsapp_send_proactive', self.send).start()
         self.buttons = patch.object(app_module, 'whatsapp_send_interactive_buttons').start()
         patch.dict(os.environ, {'OPERATOR_WHATSAPP_IDS': 'op1'}).start()
         self.addCleanup(patch.stopall)
@@ -303,6 +305,57 @@ class OperatorCommandTests(unittest.TestCase):
     def test_reject(self):
         self.run_command('отклонить 4')
         self.access.decide.assert_called_once_with(4, 'rejected')
+
+    def test_create_business_with_defaults_and_next_steps(self):
+        self.store.list_tenants.return_value = []
+        self.run_command('создать erzhan-cafe KZ monitor Кафе Ержана')
+        saved = self.store.upsert_tenant.call_args.args[0]
+        self.assertEqual((saved['id'], saved['country'], saved['timezone'], saved['vertical_pack'], saved['name']), ('erzhan-cafe', 'KZ', 'Asia/Almaty', 'monitor', 'Кафе Ержана'))
+        self.assertIn('таблица erzhan-cafe', self.send.call_args.args[3])
+
+    def test_create_rejects_bad_input_and_duplicates(self):
+        self.store.list_tenants.return_value = [{'id': 'cafe', 'name': 'Кафе'}]
+        for bad in ('создать', 'создать Bad_ID KZ monitor X', 'создать erzhan-cafe XX monitor X', 'создать erzhan-cafe KZ nonsense X'):
+            self.run_command(bad)
+            self.assertIn('Формат', self.send.call_args.args[3])
+        self.run_command('создать cafe KZ monitor Ещё')
+        self.assertIn('уже есть', self.send.call_args.args[3])
+        self.store.upsert_tenant.assert_not_called()
+
+    def test_attach_sheet_creates_tabs_and_saves_id(self):
+        self.store.get_tenant.return_value = {'id': 'cafe', 'country': 'KZ', 'modules': {}}
+        sheet = '1mf7Ut2llTOfEOUUx1gZGIfTs8j6hoNvibmoB3sLhjGw'
+        with patch('notimate.projections.sheet_tabs.init_tabs', return_value=['Закупки', 'Расходы']) as init:
+            self.run_command(f'таблица cafe https://docs.google.com/spreadsheets/d/{sheet}/edit?gid=0')
+        self.assertEqual((init.call_args.args[1], init.call_args.args[2]), (sheet, 'KZT'))
+        self.store.patch_tenant.assert_called_once_with('cafe', sheet_id=sheet)
+        self.assertIn('Создано вкладок: 2', self.send.call_args.args[3])
+
+    def test_attach_sheet_without_access_explains_what_to_do(self):
+        self.store.get_tenant.return_value = {'id': 'cafe', 'country': 'KZ', 'modules': {}}
+        with patch('notimate.projections.sheet_tabs.init_tabs', side_effect=RuntimeError('403')):
+            self.run_command('таблица cafe 1mf7Ut2llTOfEOUUx1gZGIfTs8j6hoNvibmoB3sLhjGw')
+        self.store.patch_tenant.assert_not_called()
+        self.assertIn('Редактор', self.send.call_args.args[3])
+        self.run_command('таблица cafe not-a-link')
+        self.assertIn('Не вижу ссылку', self.send.call_args.args[3])
+
+    def test_group_and_mode_commands(self):
+        self.run_command('группа cafe erzhan')
+        self.store.patch_tenant.assert_called_with('cafe', modules_patch={'group': 'erzhan'})
+        self.run_command('режим cafe monitor +location_reports')
+        self.store.patch_tenant.assert_called_with('cafe', vertical_pack='monitor', modules_patch={'extra_packs': ['location_reports']})
+        self.run_command('режим cafe nonsense')
+        self.assertIn('Режимы', self.send.call_args.args[3])
+        self.run_command('группа ghost erzhan')
+        self.assertIn('не найден', self.send.call_args.args[3])
+
+    def test_sheet_url_parsing(self):
+        from notimate.projections.sheet_tabs import parse_sheet_id
+        sid = '1mf7Ut2llTOfEOUUx1gZGIfTs8j6hoNvibmoB3sLhjGw'
+        self.assertEqual(parse_sheet_id(f'https://docs.google.com/spreadsheets/d/{sid}/edit#gid=0'), sid)
+        self.assertEqual(parse_sheet_id(sid), sid)
+        self.assertIsNone(parse_sheet_id('hello'))
 
     def test_non_operator_text_is_not_a_command(self):
         from notimate.operator import is_operator

@@ -280,5 +280,46 @@ class ConversationalAutomationTests(unittest.TestCase):
             configure_conversational_automation('tok', 'PNID-1', prompts=['a', 'b', 'c', 'd', 'e'])
 
 
+class ProactiveTemplateTests(unittest.TestCase):
+    def test_template_text_is_flattened_to_meta_rules(self):
+        from notimate.channels.whatsapp import _template_text
+        self.assertEqual(_template_text('Сводка\nВыручка: 100\n\n  Расходы:  5'), 'Сводка | Выручка: 100 | Расходы:  5')
+        self.assertEqual(len(_template_text('x' * 5000)), 1000)
+
+    def test_free_text_first_then_template_only_on_window_error(self):
+        from notimate.channels import whatsapp
+        with patch.dict('os.environ', {'WHATSAPP_FALLBACK_TEMPLATE': 'notimate_update:ru'}), \
+                patch.object(whatsapp, 'send_text', side_effect=RuntimeError('WhatsApp send failed (400): {"error":{"code":131047,"message":"Re-engagement message"}}')) as text, \
+                patch.object(whatsapp, 'send_template') as template:
+            whatsapp.send_proactive('tok', 'PN', '77', 'Сводка\nдня')
+        text.assert_called_once()
+        template.assert_called_once_with('tok', 'PN', '77', 'notimate_update', 'ru', 'Сводка\nдня')
+
+    def test_other_errors_and_missing_template_are_not_masked(self):
+        from notimate.channels import whatsapp
+        with patch.dict('os.environ', {'WHATSAPP_FALLBACK_TEMPLATE': 'notimate_update:ru'}), \
+                patch.object(whatsapp, 'send_text', side_effect=RuntimeError('WhatsApp send failed (401): bad token')), patch.object(whatsapp, 'send_template') as template:
+            with self.assertRaises(RuntimeError):
+                whatsapp.send_proactive('tok', 'PN', '77', 'x')
+        template.assert_not_called()
+        with patch.dict('os.environ', {'WHATSAPP_FALLBACK_TEMPLATE': ''}), patch.object(whatsapp, 'send_text', side_effect=RuntimeError('131047')):
+            with self.assertRaises(RuntimeError):
+                whatsapp.send_proactive('tok', 'PN', '77', 'x')
+
+    def test_template_payload_shape(self):
+        from notimate.channels import whatsapp
+        with patch.object(whatsapp, '_post') as post:
+            whatsapp.send_template('tok', 'PN', '77', 'notimate_update', 'ru', 'a\nb')
+        payload = post.call_args.args[2]
+        self.assertEqual(payload['type'], 'template')
+        self.assertEqual(payload['template']['components'][0]['parameters'], [{'type': 'text', 'text': 'a | b'}])
+
+    def test_fallback_template_parsing(self):
+        from notimate.channels.whatsapp import fallback_template
+        self.assertEqual(fallback_template({'WHATSAPP_FALLBACK_TEMPLATE': 'name:kk'}), ('name', 'kk'))
+        self.assertEqual(fallback_template({'WHATSAPP_FALLBACK_TEMPLATE': 'name'}), ('name', 'ru'))
+        self.assertIsNone(fallback_template({}))
+
+
 if __name__ == '__main__':
     unittest.main()
