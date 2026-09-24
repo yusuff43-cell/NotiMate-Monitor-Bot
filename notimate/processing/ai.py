@@ -67,7 +67,26 @@ def ask_openai(instructions, input_data, max_output_tokens):
             raise
 
 
-def analyze_image(image_data, client_cfg):
+CAFE_GLOSSARY = "СЛОВАРЬ: Clear/Clear croissant=Масляный круассан, Chocolate=Шоколадный круассан, Almond=Миндальный круассан, Ham Cheese=Круассан с ветчиной и сыром, Cheesecake=Чизкейк, Biscoff cheesecake=Бискофф чизкейк, Cheese pancakes=Сырники, Mango cheese pancakes=Манговые сырники, Cucumber cheese pancakes=Огуречные сырники, Crepes=Шпинатные блинчики, Pancakes=Панкейки, Crepes burger=Блины для бургера, Pannacotta=Панна-котта, Chocolate mousse=Шоколадный мусс, Salted Caramel=Солёная карамель, Bounty=Баунти, Halva=Халва, Marzipan=Марципан, Brownie=Брауни, Banana bread=Банановый хлеб, Muffin=Маффин, Snickers=Сникерс, Napoleons=Наполеон, Sourdough=Хлеб на закваске (для брускет), Banana=Банан (не банановый хлеб), Coconut velvet=Кокосовое молоко велюр, Coconut milk velvet=Кокосовое молоко велюр, Dragon fruit=Драгон фрут, Salmon=Лосось, Yogurt=Йогурт, Açaí=Асаи"
+
+
+def document_input_part(data_b64, mime='image/jpeg'):
+    """One Responses API content part for a photo or a PDF (base64, no data: prefix)."""
+    if mime == 'application/pdf':
+        return {"type": "input_file", "filename": "document.pdf", "file_data": f"data:application/pdf;base64,{data_b64}"}
+    return {"type": "input_image", "image_url": f"data:{mime};base64,{data_b64}", "detail": "high"}
+
+
+def currency_hint(client_cfg):
+    """Extra prompt line for tenants that don't use Thai baht (THB tenants get no change)."""
+    currency = str(client_cfg.get('currency') or 'THB')
+    if currency == 'THB':
+        return ''
+    symbols = {'KZT': '₸, тг, тенге', 'RUB': '₽, руб', 'USD': '$', 'EUR': '€'}.get(currency, currency)
+    return f"\nВАЛЮТА КЛИЕНТА: {currency} ({symbols}). Все правила выше про символ ฿ и суммы применяй к этой валюте; в поле unit_price/amount возвращай только число.\n"
+
+
+def analyze_image(image_data, client_cfg, mime='image/jpeg'):
     business_context = client_prompt_context(client_cfg)
     return ask_openai(
         f"""Ты анализируешь фото документов для бизнеса. Входные документы могут быть на русском, тайском или английском языке. Распознавай все три языка, но все названия, пояснения, переводы и советы возвращай только на русском языке.
@@ -100,13 +119,20 @@ def analyze_image(image_data, client_cfg):
 - Игнорируй строки без суммы
 
 Скриншоты магазинов, ценники, фото продуктов без чека — верни: NOT_FINANCE
-Если не финансовый документ — верни: NOT_FINANCE""",
+Если не финансовый документ — верни: NOT_FINANCE{currency_hint(client_cfg)}""",
         [{"role": "user", "content": [
             {"type": "input_text", "text": "Проанализируй документ."},
-            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{image_data}", "detail": "high"},
+            document_input_part(image_data, mime),
         ]}],
         2000,
     )
+
+
+def glossary_block(client_cfg):
+    """The café pastry glossary is JSC-specific vocabulary: it stays for every tenant that
+    doesn't opt out with ``glossary: 'none'`` (existing LINE clients are unaffected), and is
+    omitted for new tenants of other businesses so it can't bias their classification."""
+    return '' if client_cfg.get('glossary') == 'none' else CAFE_GLOSSARY + '\n'
 
 
 def analyze_text(text, client_cfg):
@@ -115,8 +141,8 @@ def analyze_text(text, client_cfg):
         f"""КРИТИЧЕСКИ ВАЖНО: Только анализируй сообщения по правилам. Если не подходит — верни ТОЛЬКО: IGNORE
 Входное сообщение может быть на русском, тайском или английском языке. Понимай все три языка. Названия товаров, описание проблемы, перевод, рекомендации и весь текст для владельца возвращай только на русском языке. JSON-ключи сохраняй точно по схеме.
 КОНТЕКСТ КЛИЕНТА: {business_context}
-
-СЛОВАРЬ: Clear/Clear croissant=Масляный круассан, Chocolate=Шоколадный круассан, Almond=Миндальный круассан, Ham Cheese=Круассан с ветчиной и сыром, Cheesecake=Чизкейк, Biscoff cheesecake=Бискофф чизкейк, Cheese pancakes=Сырники, Mango cheese pancakes=Манговые сырники, Cucumber cheese pancakes=Огуречные сырники, Crepes=Шпинатные блинчики, Pancakes=Панкейки, Crepes burger=Блины для бургера, Pannacotta=Панна-котта, Chocolate mousse=Шоколадный мусс, Salted Caramel=Солёная карамель, Bounty=Баунти, Halva=Халва, Marzipan=Марципан, Brownie=Брауни, Banana bread=Банановый хлеб, Muffin=Маффин, Snickers=Сникерс, Napoleons=Наполеон, Sourdough=Хлеб на закваске (для брускет), Banana=Банан (не банановый хлеб), Coconut velvet=Кокосовое молоко велюр, Coconut milk velvet=Кокосовое молоко велюр, Dragon fruit=Драгон фрут, Salmon=Лосось, Yogurt=Йогурт, Açaí=Асаи
+{currency_hint(client_cfg)}
+{glossary_block(client_cfg)}
 
 ТИПЫ СООБЩЕНИЙ:
 

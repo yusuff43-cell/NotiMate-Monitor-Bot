@@ -52,6 +52,11 @@ def build_whatsapp_inbound_message(channel_row: Mapping[str, Any], message: Mapp
         if image.get('id'):
             media.append({'kind': 'image', 'id': str(image['id']), 'mime_type': str(image.get('mime_type') or 'image/jpeg')})
         text = str(image.get('caption') or '')
+    elif message.get('type') == 'document':
+        document = message.get('document', {})
+        if document.get('id') and str(document.get('mime_type') or '') == 'application/pdf':
+            media.append({'kind': 'pdf', 'id': str(document['id']), 'mime_type': 'application/pdf', 'filename': str(document.get('filename') or '')})
+        text = str(document.get('caption') or '')
     received_at = None
     timestamp = message.get('timestamp')
     if timestamp:

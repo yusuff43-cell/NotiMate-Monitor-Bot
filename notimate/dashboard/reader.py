@@ -13,6 +13,8 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+from notimate.dashboard.categories import categorize
+
 CRITICAL_NOTES = {'Out of stock': 'out', 'Exp today': 'expiry', 'Low stock': 'low'}
 TREND_DAYS = {'day': 14, 'week': 14, 'month': 30}
 CURRENCIES = {'TH': 'THB', 'KZ': 'KZT'}
@@ -114,6 +116,38 @@ class PostgresDashboardReader:
         )
         return [{'title': (r['message'] or '')[:120], 'status': 'Новая'} for r in rows]
 
+    def expense_rows(self, tenant_id: str, start: dt.date, end: dt.date, location_pack: bool) -> list[dict[str, Any]]:
+        """Expense-like rows (expense + salary) in [start, end], newest first, for the by-category view.
+        «Отчёты точек» tenants have no itemised expenses (только «внешние выплаты» за день), so they return []."""
+        if location_pack:
+            return []
+        return self._rows(
+            """
+            SELECT occurred_on AS day, operation_type, counterparty, description, amount
+            FROM operations
+            WHERE tenant_id = %s AND status = 'confirmed' AND operation_type IN ('expense', 'salary')
+              AND amount IS NOT NULL AND occurred_on BETWEEN %s AND %s
+            ORDER BY occurred_on DESC, id DESC LIMIT 2000
+            """,
+            (tenant_id, start, end),
+        )
+
+    def location_rows(self, tenant_id: str, start: dt.date, end: dt.date) -> list[dict[str, Any]]:
+        """Per-location totals for «Отчёты точек» tenants (every active location, reported or not)."""
+        return self._rows(
+            """
+            SELECT l.id, l.name,
+                   COALESCE(SUM(r.revenue), 0) AS revenue, COALESCE(SUM(r.cash), 0) AS cash,
+                   COALESCE(SUM(r.non_cash), 0) AS non_cash, COALESCE(SUM(r.external_payouts), 0) AS payouts,
+                   COUNT(r.id) AS reports
+            FROM locations l
+            LEFT JOIN location_reports r ON r.location_id = l.id AND r.occurred_on BETWEEN %s AND %s
+            WHERE l.tenant_id = %s AND l.status = 'active'
+            GROUP BY l.id, l.name ORDER BY l.name
+            """,
+            (start, end, tenant_id),
+        )
+
     def recent_operations(self, tenant_id: str, location_pack: bool) -> list[dict[str, Any]]:
         if location_pack:
             rows = self._rows(
@@ -138,7 +172,7 @@ class PostgresDashboardReader:
         return [{'label': r['label'], 'amount': _f(r['amount']), 'kind': r['kind']} for r in rows]
 
 
-def build_snapshot(reader, tenant: dict[str, Any], period: str, now: dt.datetime) -> dict[str, Any]:
+def build_snapshot(reader, tenant: dict[str, Any], period: str, now: dt.datetime, accounting: dict[str, Any] | None = None) -> dict[str, Any]:
     """Assemble the docs/17 ``DashboardSnapshot`` for one tenant at local time ``now``."""
     tenant_id = tenant['id']
     location_pack = tenant.get('vertical_pack') == 'location_reports'
@@ -159,7 +193,54 @@ def build_snapshot(reader, tenant: dict[str, Any], period: str, now: dt.datetime
         day = (today - dt.timedelta(days=offset)).isoformat()
         values = totals.get(day, {})
         trend.append({'date': day, 'revenue': values.get('revenue', 0.0), 'expenses': values.get('expenses', 0.0)})
+    # Selected period (the dashboard's «День / Неделя / Месяц» switch)
+    if period == 'week':
+        sel_from = today - dt.timedelta(days=6)
+    elif period == 'month':
+        sel_from = month_start
+    else:
+        sel_from = today
+    sel_totals = reader.daily_totals(tenant_id, sel_from, today, location_pack) if sel_from < start else {
+        d: v for d, v in totals.items() if sel_from.isoformat() <= d <= today.isoformat()}
+    sel_rev = sum(v['revenue'] for v in sel_totals.values())
+    sel_exp = sum(v['expenses'] for v in sel_totals.values())
+
+    overrides = (tenant.get('modules') or {}).get('expense_categories') if isinstance(tenant.get('modules'), dict) else None
+    by_category: dict[str, dict[str, Any]] = {}
+    expense_list = []
+    for row in reader.expense_rows(tenant_id, sel_from, today, location_pack):
+        amount = _f(row['amount'])
+        category = categorize(row.get('counterparty'), row.get('description'), row['operation_type'], overrides)
+        slot = by_category.setdefault(category, {'category': category, 'amount': 0.0, 'count': 0})
+        slot['amount'] += amount
+        slot['count'] += 1
+        if len(expense_list) < 200:
+            expense_list.append({
+                'date': row['day'].isoformat(), 'label': (row.get('description') or row.get('counterparty') or '—')[:120],
+                'supplier': (row.get('counterparty') or '')[:80], 'category': category, 'amount': amount,
+            })
+    spent = sum(c['amount'] for c in by_category.values())
+    categories = sorted(by_category.values(), key=lambda c: -c['amount'])
+    for entry in categories:
+        entry['share'] = round(entry['amount'] / spent, 4) if spent else 0.0
+
+    locations = []
+    if location_pack:
+        for row in reader.location_rows(tenant_id, sel_from, today):
+            locations.append({
+                'name': row['name'], 'revenue': _f(row['revenue']), 'cash': _f(row['cash']), 'nonCash': _f(row['non_cash']),
+                'payouts': _f(row['payouts']), 'reports': int(row['reports'] or 0),
+            })
+
     return {
+        'channels': list(tenant.get('channels') or []),
+        'tenantName': tenant.get('name') or '',
+        'sheetUrl': f"https://docs.google.com/spreadsheets/d/{tenant['sheet_id']}" if tenant.get('sheet_id') else None,
+        'selected': {'period': period, 'from': sel_from.isoformat(), 'to': today.isoformat(), 'revenue': sel_rev, 'expenses': sel_exp, 'result': sel_rev - sel_exp},
+        'expensesByCategory': categories,
+        'expenses': expense_list,
+        'locations': locations,
+        'accounting': accounting,
         'generatedAt': now.isoformat(),
         'timezone': tenant.get('timezone') or 'Asia/Bangkok',
         'currency': CURRENCIES.get((tenant.get('country') or '').upper(), 'THB'),

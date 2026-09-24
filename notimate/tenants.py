@@ -144,3 +144,8 @@ def whatsapp_channel_config(row: Mapping[str, object], secret: Mapping[str, obje
         'business_type': tenant.get('business_type'),
         'custom_context': tenant.get('custom_context'),
     }
+
+
+def cfg_currency(client_cfg: Mapping[str, object]) -> str:
+    """Currency label for messages, ledger rows and Sheets headers; THB unless the tenant says otherwise."""
+    return str(client_cfg.get("currency") or "THB")

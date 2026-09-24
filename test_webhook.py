@@ -120,7 +120,12 @@ class WebhookTests(unittest.TestCase):
     def test_overview_failure_does_not_break_confirmed_operation(self):
         with patch.object(app_module, 'refresh_overview', side_effect=RuntimeError('temporary sheet error')):
             with self.assertLogs('notimate', level='WARNING'):
-                self.assertIsNone(app_module.refresh_overview_safely(app_module.CLIENTS['Ubot']))
+                self.assertIsNone(app_module.refresh_overview_safely({**app_module.CLIENTS['Ubot'], 'overview_enabled': True}))
+
+    def test_overview_is_retired_by_default(self):
+        with patch.object(app_module, 'refresh_overview') as refresh:
+            self.assertIsNone(app_module.refresh_overview_safely(app_module.CLIENTS['Ubot']))
+        refresh.assert_not_called()
 
 
 if __name__ == '__main__':

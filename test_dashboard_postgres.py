@@ -74,12 +74,32 @@ class DashboardReaderPostgresTests(unittest.TestCase):
         self.assertEqual(self.reader.payments_for(self.tenant, self.today, True), {'cash': 20000.0, 'card': 30000.0, 'qr': 0.0})
         self.assertEqual(self.reader.recent_operations(self.tenant, True)[0]['label'], 'Точка 1')
 
+    def test_expense_rows_and_location_rows(self):
+        self.ops.record_operation(self.tenant, 'e1', 'expense', '2026-09-24', 300, 'THB', 'Makro', 'milk')
+        self.ops.record_operation(self.tenant, 's1', 'salary', '2026-09-23', 700, 'THB', 'Ann', '')
+        self.ops.record_operation(self.tenant, 'r1', 'revenue', '2026-09-24', 9000, 'THB', None, 'shift')
+        self.ops.record_operation(self.tenant, 'old', 'expense', '2026-08-01', 5, 'THB', 'X', 'old')
+        self.ops.record_operation(self.other, 'e2', 'expense', '2026-09-24', 99999, 'THB', 'Other', 'other tenant')
+        rows = self.reader.expense_rows(self.tenant, dt.date(2026, 9, 1), self.today, False)
+        self.assertEqual([(r['operation_type'], float(r['amount'])) for r in rows], [('expense', 300.0), ('salary', 700.0)])
+        self.assertEqual(self.reader.expense_rows(self.tenant, dt.date(2026, 9, 1), self.today, True), [])
+        self.locations.upsert_location(self.tenant, self.tenant + '-l1', 'Точка 1')
+        self.locations.upsert_location(self.tenant, self.tenant + '-l2', 'Точка 2')
+        self.locations.upsert_staff(self.tenant, 's1', self.tenant + '-l1', 'Аня')
+        draft = self.locations.create_draft(self.tenant, self.tenant + '-l1', 's1', '2026-09-24', {'revenue': 1000, 'cash': 400, 'non_cash': 600, 'external_payouts': 10, 'cash_balance': 1, 'comment': ''}, 'x')
+        self.locations.confirm_draft(draft)
+        by_name = {r['name']: r for r in self.reader.location_rows(self.tenant, self.today, self.today)}
+        self.assertEqual(float(by_name['Точка 1']['revenue']), 1000.0)
+        self.assertEqual(int(by_name['Точка 1']['reports']), 1)
+        self.assertEqual((float(by_name['Точка 2']['revenue']), int(by_name['Точка 2']['reports'])), (0.0, 0))  # unreported point still listed
+
     def test_get_tenant_merges_owners_and_ignores_inactive(self):
         self.tenants.upsert_tenant({'id': self.tenant, 'name': 'T', 'country': 'KZ', 'timezone': 'Asia/Almaty', 'status': 'active'})
         self.tenants.upsert_channel({'tenant_id': self.tenant, 'channel': 'whatsapp', 'external_id': self.tenant + '-pn', 'secret_ref': 'x', 'owner_ids': ['a', 'b'], 'allowed_chats': None})
         self.tenants.upsert_channel({'tenant_id': self.tenant, 'channel': 'line', 'external_id': self.tenant + '-ln', 'secret_ref': 'y', 'owner_ids': ['b', 'c'], 'allowed_chats': None})
         tenant = self.tenants.get_tenant(self.tenant)
         self.assertEqual(sorted(tenant['owner_ids']), ['a', 'b', 'c'])
+        self.assertEqual(tenant['channels'], ['line', 'whatsapp'])
         self.assertIsNone(self.tenants.get_tenant('no-such-tenant'))
 
 

@@ -82,8 +82,55 @@ def _authorized_tenant(claims: dict[str, Any], *, allow_accountant: bool = False
     return tenant if claims['s'] in allowed else None
 
 
+def _accounting_block(tenant: dict[str, Any], subject: str, now) -> dict[str, Any] | None:
+    """Short accounting summary for the dashboard (None when the module is off for the tenant)."""
+    import app
+    from notimate.packs.accountant import flow
+    from notimate.packs.accountant.package import previous_period
+    if not flow.module_enabled(tenant):
+        return None
+    store = getattr(app, 'documents_store', None)
+    if not store or not app.DOCUMENTS_DB_ENABLED:
+        return {'available': False}
+    period = now.strftime('%Y-%m')
+    previous = previous_period(now.date())
+    documents, findings = flow.compute_findings(store, tenant, period)
+    return {
+        'available': True,
+        'period': period,
+        'documents': len(documents),
+        'total': sum(float(d['total']) for d in documents if d.get('total') is not None),
+        'missing': len(findings),
+        'findings': [f['text'] for f in findings[:6]],
+        'previousPeriod': previous,
+        'previousStatus': store.period_status(tenant['id'], previous),
+        'packageUrl': package_link(tenant, subject, previous),
+    }
+
+
 def _session_claims() -> dict[str, Any] | None:
     return links.verify_token(_secret(), request.cookies.get(COOKIE, ''), 'session')
+
+
+ASSET_DIR = os.path.join(os.path.dirname(__file__), 'static')
+CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+
+
+def _read_asset(name: str) -> bytes:
+    with open(os.path.join(ASSET_DIR, name), 'rb') as handle:
+        return handle.read()
+
+
+def _page_response(body: bytes, mimetype: str) -> Response:
+    response = Response(body, mimetype=mimetype.split(';')[0])
+    response.headers['Content-Type'] = mimetype
+    response.headers['Content-Security-Policy'] = CSP
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['X-Frame-Options'] = 'DENY'
+    return _no_store(response)
 
 
 def register_routes(flask_app) -> None:
@@ -104,7 +151,7 @@ def register_routes(flask_app) -> None:
         if not claims or not _authorized_tenant(claims):
             return _no_store(Response('Ссылка недействительна или устарела. Запросите новую в чате.', status=403, mimetype='text/plain'))
         session = links.issue_token(_secret(), claims['t'], claims['s'], 'session', links.SESSION_TTL)
-        target = os.environ.get('DASHBOARD_BASE_URL', '')
+        target = os.environ.get('DASHBOARD_BASE_URL') or '/dashboard'
         response = redirect(target, code=302) if target else Response('OK', mimetype='text/plain')
         response.set_cookie(
             COOKIE, session, max_age=links.SESSION_TTL, httponly=True, samesite='Lax',
@@ -129,12 +176,31 @@ def register_routes(flask_app) -> None:
         if reader is None:
             return _no_store(jsonify({'error': 'unavailable'})), 503
         try:
-            snapshot = build_snapshot(reader, tenant, period, local_now(tenant.get('timezone')))
+            now = local_now(tenant.get('timezone'))
+            try:
+                accounting = _accounting_block(tenant, claims['s'], now)
+            except Exception as exc:
+                from logging_utils import get_logger
+                get_logger().warning('dashboard_accounting_failed', extra={'error_type': type(exc).__name__})
+                accounting = {'available': False}
+            snapshot = build_snapshot(reader, tenant, period, now, accounting)
         except Exception as exc:
             from logging_utils import get_logger
             get_logger().error('dashboard_snapshot_failed', extra={'error_type': type(exc).__name__})
             return _no_store(jsonify({'error': 'unavailable'})), 503
         return _no_store(jsonify(snapshot))
+
+    @flask_app.route('/dashboard', methods=['GET'])
+    def dashboard_page():
+        if not feature_enabled():
+            abort(404)
+        return _page_response(_read_asset('page.html'), 'text/html; charset=utf-8')
+
+    @flask_app.route('/dashboard/app.js', methods=['GET'])
+    def dashboard_script():
+        if not feature_enabled():
+            abort(404)
+        return _page_response(_read_asset('app.js'), 'application/javascript; charset=utf-8')
 
     @flask_app.route('/v1/owner-dashboard/logout', methods=['POST'])
     def owner_dashboard_logout():

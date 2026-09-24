@@ -10,16 +10,19 @@ import pytz
 import app
 from logging_utils import get_logger
 from notimate.projections.sheets import _money, upcoming_reminders
+from notimate.tenants import cfg_currency
 
 logger = get_logger()
 
 
 def weekly_report(client_cfg):
     """Еженедельная аналитика — воскресенье 18:00"""
+    cur = cfg_currency(client_cfg)
+    amount_key = f'Сумма ({cur})'
     if not app.gc:
         return
     try:
-        tz = pytz.timezone('Asia/Bangkok')
+        tz = pytz.timezone(client_cfg.get('timezone') or 'Asia/Bangkok')
         now = datetime.datetime.now(tz)
         week_ago = (now - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
         date_today = now.strftime('%Y-%m-%d')
@@ -43,7 +46,7 @@ def weekly_report(client_cfg):
             def safe_float(v):
                 try: return float(str(v or 0).replace('฿','').replace(',','').replace('B','').strip() or 0)
                 except: return 0
-            total_expenses = sum(safe_float(r.get('Сумма (THB)',0)) for r in week_exp)
+            total_expenses = sum(safe_float(r.get(amount_key,0)) for r in week_exp)
         except: pass
 
         # Проблемы за неделю
@@ -73,17 +76,17 @@ def weekly_report(client_cfg):
         report = app.ask_openai(
             'Составь короткую еженедельную сводку для русскоязычного владельца кофейни. Пиши только на русском, конкретно и кратко, максимум 15 строк.',
             f"""Данные за неделю ({week_ago} — {date_today}):
-Выручка: {total_revenue:.0f} THB
-Расходы: {total_expenses:.0f} THB
-Прибыль: {profit_sign}{profit:.0f} THB
+Выручка: {total_revenue:.0f} {cur}
+Расходы: {total_expenses:.0f} {cur}
+Прибыль: {profit_sign}{profit:.0f} {cur}
 Проблемы: {problems_text or 'не зафиксировано'}
 Закончилось: {', '.join(out_of_stock[:5]) or 'всё в норме'}
 
 Формат:
 📊 Итоги недели [даты]
-💰 Выручка: X THB
-💸 Расходы: X THB
-📈 Прибыль: X THB
+💰 Выручка: X {cur}
+💸 Расходы: X {cur}
+📈 Прибыль: X {cur}
 ⚠️ Проблемы: список или 'нет'
 🔴 Закончилось: список или 'всё ок'
 💡 Вывод: 1-2 предложения""",
@@ -121,10 +124,12 @@ def evening_summary(client_cfg, tenant_id=None):
     enabled only after ``deploy/compare_sheets_vs_postgres.py`` shows a week of matching
     data) reads the PostgreSQL ledger instead, with Sheets as the fallback.
     """
+    cur = cfg_currency(client_cfg)
+    amount_key = f'Сумма ({cur})'
     if not app.gc:
         return
     try:
-        tz = pytz.timezone('Asia/Bangkok')
+        tz = pytz.timezone(client_cfg.get('timezone') or 'Asia/Bangkok')
         now = datetime.datetime.now(tz)
         date_today = now.strftime('%Y-%m-%d')
         month_prefix = now.strftime('%Y-%m')
@@ -143,18 +148,18 @@ def evening_summary(client_cfg, tenant_id=None):
                 pass
             try:
                 rows = sh.worksheet('Расходы').get_all_records()
-                expenses_today = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(date_today))
-                expenses_month = sum(_money(row.get('Сумма (THB)')) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
+                expenses_today = sum(_money(row.get(amount_key)) for row in rows if str(row.get('Дата', '')).startswith(date_today))
+                expenses_month = sum(_money(row.get(amount_key)) for row in rows if str(row.get('Дата', '')).startswith(month_prefix))
             except Exception:
                 pass
 
         balance_today = revenue_today - expenses_today
         msg = (
             f"🌙 Вечерняя сводка · {now.strftime('%d.%m.%Y')}\n\n"
-            f"💰 Выручка сегодня: {revenue_today:,.0f} THB\n"
-            f"💸 Расходы сегодня: {expenses_today:,.0f} THB\n"
-            f"📈 Разница за день: {balance_today:+,.0f} THB\n"
-            f"📊 За месяц: выручка {revenue_month:,.0f} · расходы {expenses_month:,.0f} THB"
+            f"💰 Выручка сегодня: {revenue_today:,.0f} {cur}\n"
+            f"💸 Расходы сегодня: {expenses_today:,.0f} {cur}\n"
+            f"📈 Разница за день: {balance_today:+,.0f} {cur}\n"
+            f"📊 За месяц: выручка {revenue_month:,.0f} · расходы {expenses_month:,.0f} {cur}"
         )
         reminders = upcoming_reminders(sh, now)
         if reminders:
@@ -173,7 +178,7 @@ def reminders_report(client_cfg):
     if not app.gc:
         return
     try:
-        now = datetime.datetime.now(pytz.timezone('Asia/Bangkok'))
+        now = datetime.datetime.now(pytz.timezone(client_cfg.get('timezone') or 'Asia/Bangkok'))
         reminders = upcoming_reminders(app.gc.open_by_key(client_cfg['sheet_id']), now, days_limit=7, limit=12)
         if reminders:
             lines = ['🔔 Напоминания на ближайшие 7 дней:']
@@ -194,10 +199,12 @@ def owner_menu(client_cfg):
 
 def detailed_report(client_cfg):
     """Развёрнутый отчёт по запросу владельца."""
+    cur = cfg_currency(client_cfg)
+    amount_key = f'Сумма ({cur})'
     if not app.gc:
         return
     try:
-        tz = pytz.timezone('Asia/Bangkok')
+        tz = pytz.timezone(client_cfg.get('timezone') or 'Asia/Bangkok')
         now = datetime.datetime.now(tz)
         date_today = now.strftime('%Y-%m-%d')
         yesterday = (now - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
@@ -209,8 +216,8 @@ def detailed_report(client_cfg):
             today_rows = []
         try:
             rows_exp = sh.worksheet('Расходы').get_all_records()
-            total_yesterday = sum(_money(row.get('Сумма (THB)')) for row in rows_exp if str(row.get('Дата', '')) == yesterday)
-            total_month = sum(_money(row.get('Сумма (THB)')) for row in rows_exp if str(row.get('Дата', '')).startswith(now.strftime('%Y-%m')))
+            total_yesterday = sum(_money(row.get(amount_key)) for row in rows_exp if str(row.get('Дата', '')) == yesterday)
+            total_month = sum(_money(row.get(amount_key)) for row in rows_exp if str(row.get('Дата', '')).startswith(now.strftime('%Y-%m')))
         except Exception:
             total_yesterday = total_month = 0.0
         stock_text = '\n'.join(
@@ -219,7 +226,7 @@ def detailed_report(client_cfg):
         )
         report = app.ask_openai(
             "Ты аналитик кафе. Составь подробный отчёт только на русском для владельца. Будь конкретным и компактным. Формат: 📋 Подробный отчёт по кофейне [дата]; 🔴 ЗАКОНЧИЛОСЬ / КРИТИЧНО; 🟡 МАЛО ОСТАЛОСЬ; 💰 РАСХОДЫ ВЧЕРА; 📊 РАСХОДЫ ЗА МЕСЯЦ; 💡 РЕКОМЕНДАЦИИ.",
-            f"Дата: {date_today}\nОстатки:\n{stock_text}\nРасходы вчера: {total_yesterday} THB\nРасходы за месяц: {total_month} THB",
+            f"Дата: {date_today}\nОстатки:\n{stock_text}\nРасходы вчера: {total_yesterday} {cur}\nРасходы за месяц: {total_month} {cur}",
             1000,
         )
         reminders = upcoming_reminders(sh, now, days_limit=7)

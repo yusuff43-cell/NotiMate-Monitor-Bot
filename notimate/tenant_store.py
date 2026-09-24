@@ -215,7 +215,7 @@ class PostgresTenantStore:
             ).fetchone()
             if not row:
                 return None
-            owners = conn.execute('SELECT owner_ids FROM tenant_channels WHERE tenant_id = %s', (tenant_id,)).fetchall()
+            owners = conn.execute('SELECT channel, owner_ids FROM tenant_channels WHERE tenant_id = %s', (tenant_id,)).fetchall()
         tenant = dict(row)
         merged: list[str] = []
         for record in owners:
@@ -223,4 +223,5 @@ class PostgresTenantStore:
                 if str(owner) not in merged:
                     merged.append(str(owner))
         tenant['owner_ids'] = merged
+        tenant['channels'] = sorted({record['channel'] for record in owners})
         return tenant

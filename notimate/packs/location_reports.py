@@ -258,9 +258,10 @@ IMAGE_REPORT_NOTE = (
 def analyze_report_image(image_b64: str, mime: str = 'image/jpeg', caption: str = '') -> dict[str, Any] | None:
     """Same extraction as ``analyze_report_text`` but from a photo (docs/21: «текстом или фото»)."""
     import app
+    from notimate.processing.ai import document_input_part
     content = [
         {'type': 'input_text', 'text': caption or 'Извлеки данные отчёта с фото.'},
-        {'type': 'input_image', 'image_url': f'data:{mime};base64,{image_b64}', 'detail': 'high'},
+        document_input_part(image_b64, mime),
     ]
     result = app.ask_openai(REPORT_PROMPT + '\n\n' + IMAGE_REPORT_NOTE, [{'role': 'user', 'content': content}], 800)
     return _parse_report_fields(result)
@@ -444,7 +445,7 @@ def process_location_report_event(row: dict[str, Any], config: dict[str, Any], i
         return
 
     media = getattr(inbound, 'media', ())
-    if media and media[0].get('kind') == 'image':
+    if media and media[0].get('kind') in ('image', 'pdf'):
         try:
             data, mime = app.whatsapp_download_media(access_token, media[0]['id'])
         except Exception as exc:

@@ -237,6 +237,7 @@ from notimate.reports.summaries import (  # noqa: E402
     weekly_report,
 )
 from notimate.packs.accountant.flow import line_owner_command, process_accountant_event, register_line_document  # noqa: E402
+from notimate.packs.monitor import process_monitor_event  # noqa: E402
 from notimate.pipeline import process_line_event, process_whatsapp_event  # noqa: E402
 
 
@@ -367,6 +368,30 @@ try:
                     )
         except Exception as exc:
             logger.warning('location_reports_scheduling_failed', extra={'error_type': type(exc).__name__})
+        # «Монитор» для WhatsApp: те же вечерняя (20:00) и недельная (вс 18:00) сводки, что у
+        # LINE, в часовом поясе tenant; уведомления уходят владельцам в WhatsApp.
+        try:
+            from notimate.packs import monitor as monitor_pack
+            for row in tenant_store.list_channels('whatsapp'):
+                tenant = row['tenant']
+                if tenant.get('vertical_pack') != 'monitor' or not tenant.get('sheet_id'):
+                    continue
+                config = whatsapp_channel_config(row, WHATSAPP_SECRETS.get(row['channel']['secret_ref']))
+                if not config:
+                    continue
+
+                def _make_notify(token=config['access_token'], pnid=config['phone_number_id'], owners=tuple(config['owner_ids'])):
+                    def notify(body):
+                        for owner in owners:
+                            whatsapp_send_text(token, pnid, owner, body)
+                    return notify
+
+                cfg = monitor_pack.build_cfg(row, config, _make_notify())
+                tz = pytz.timezone(cfg['timezone'])
+                scheduler.add_job(evening_summary, 'cron', hour=20, minute=0, timezone=tz, args=[cfg], kwargs={'tenant_id': tenant['id']}, id=f"evening_wa_{tenant['id']}")
+                scheduler.add_job(weekly_report, 'cron', day_of_week='sun', hour=18, minute=0, timezone=tz, args=[cfg], id=f"weekly_wa_{tenant['id']}")
+        except Exception as exc:
+            logger.warning('monitor_scheduling_failed', extra={'error_type': type(exc).__name__})
         # «Бухгалтер» (Этап 7): month package on the 1st at 09:00 and a Monday «не хватает»
         # digest, both in the tenant's own timezone.
         try:

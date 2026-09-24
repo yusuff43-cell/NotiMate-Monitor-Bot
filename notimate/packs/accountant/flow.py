@@ -107,7 +107,20 @@ def intake_document(
     policy = policy or resolve_policy(tenant, 'accountant', 'document')
     if needs_confirmation(policy, confident):
         return {'status': 'draft', 'doc_id': doc_id, 'fields': fields}
-    return {'status': 'confirmed', 'doc': store.confirm_document(doc_id, confirmed_by or 'auto'), 'confident': confident}
+    doc = store.confirm_document(doc_id, confirmed_by or 'auto')
+    _project(tenant, doc)
+    return {'status': 'confirmed', 'doc': doc, 'confident': confident}
+
+
+def _project(tenant: Mapping[str, Any], doc: Mapping[str, Any]) -> None:
+    """Mirror a numbered document into the tenant's «Бухгалтерия» tab (best effort)."""
+    from notimate.projections.accounting_sheet import project_document_safely
+    project_document_safely(tenant.get('sheet_id'), dict(doc))
+
+
+def refresh_missing_tab(tenant: Mapping[str, Any], findings: list[dict[str, Any]]) -> None:
+    from notimate.projections.accounting_sheet import refresh_missing_safely
+    refresh_missing_safely(tenant.get('sheet_id'), findings)
 
 
 # ── findings / package ─────────────────────────────────────────────────────────────────
@@ -173,6 +186,7 @@ def send_weekly_missing_digest(tenant: Mapping[str, Any], access_token: str, pho
     try:
         period = local_date(timezone)[:7]
         _, findings = compute_findings(store, tenant, period)
+        refresh_missing_tab(tenant, findings)
         if not findings:
             return
         for owner_id in owner_ids:
@@ -222,7 +236,9 @@ def process_accountant_event(row: dict[str, Any], config: dict[str, Any], inboun
                 return
             try:
                 if prefix == 'doc:confirm:':
-                    reply(format_confirmed(store.confirm_document(document_id, inbound.sender_id)))
+                    confirmed = store.confirm_document(document_id, inbound.sender_id)
+                    _project(tenant, confirmed)
+                    reply(format_confirmed(confirmed))
                 else:
                     store.reject_document(document_id)
                     reply('Отправьте фото документа ещё раз — лучше при хорошем освещении, целиком в кадре.'
@@ -234,7 +250,7 @@ def process_accountant_event(row: dict[str, Any], config: dict[str, Any], inboun
             return
 
     media = getattr(inbound, 'media', ())
-    if media and media[0].get('kind') == 'image':
+    if media and media[0].get('kind') in ('image', 'pdf'):
         try:
             data, mime = app.whatsapp_download_media(access_token, media[0]['id'])
         except Exception as exc:
@@ -246,7 +262,7 @@ def process_accountant_event(row: dict[str, Any], config: dict[str, Any], inboun
         if status == 'exists':
             return
         if status == 'not_document':
-            reply('Не вижу на фото документа (чек, накладная, счёт или слип). Пришлите фото документа целиком.')
+            reply('Не вижу документа (чек, накладная, счёт или слип). Пришлите фото или PDF целиком.')
         elif status == 'duplicate':
             doc = result['doc']
             reply(f"Этот документ уже загружен: № {doc['doc_number']}." if doc.get('doc_number') else 'Этот документ уже загружен и ждёт подтверждения.')
@@ -292,6 +308,7 @@ def process_accountant_event(row: dict[str, Any], config: dict[str, Any], inboun
             return
         if command in MISSING_COMMANDS:
             _, findings = compute_findings(store, tenant, today_period)
+            refresh_missing_tab(tenant, findings)
             reply(summarize_findings(findings))
             return
         if command in REGISTRY_COMMANDS:
@@ -336,6 +353,7 @@ def register_line_document(destination: str, client_cfg: Mapping[str, Any], even
         tenant = {
             'id': destination, 'name': client_cfg.get('name'), 'business_type': client_cfg.get('business_type'),
             'country': client_cfg.get('country') or 'TH', 'modules': client_cfg.get('modules'), 'vertical_pack': None,
+            'sheet_id': client_cfg.get('sheet_id'),
         }
         source = event.get('source', {})
         result = intake_document(

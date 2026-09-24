@@ -88,10 +88,11 @@ def parse_document_result(result: str | None) -> dict[str, Any] | None:
 
 def analyze_document_image(image_b64: str, mime: str = 'image/jpeg', context: str = '') -> dict[str, Any] | None:
     import app
+    from notimate.processing.ai import document_input_part
     prompt = DOCUMENT_PROMPT + (f'\n\nКонтекст клиента: {context}' if context else '')
     content = [
         {'type': 'input_text', 'text': 'Проанализируй документ.'},
-        {'type': 'input_image', 'image_url': f'data:{mime};base64,{image_b64}', 'detail': 'high'},
+        document_input_part(image_b64, mime),
     ]
     return parse_document_result(app.ask_openai(prompt, [{'role': 'user', 'content': content}], 1200))
 

@@ -78,6 +78,35 @@ class FakeReader:
     def recent_operations(self, tenant_id, location_pack):
         return []
 
+    def expense_rows(self, tenant_id, start, end, location_pack):
+        self.expense_args = (tenant_id, start, end, location_pack)
+        return [
+            {'day': dt.date(2026, 9, 24), 'operation_type': 'expense', 'counterparty': 'Makro', 'description': 'молоко', 'amount': 300},
+            {'day': dt.date(2026, 9, 23), 'operation_type': 'expense', 'counterparty': '', 'description': 'аренда точки', 'amount': 700},
+            {'day': dt.date(2026, 9, 23), 'operation_type': 'salary', 'counterparty': 'Аня', 'description': '', 'amount': 500},
+            {'day': dt.date(2026, 9, 22), 'operation_type': 'expense', 'counterparty': 'Неизвестно', 'description': 'zzz', 'amount': 100},
+        ]
+
+    def location_rows(self, tenant_id, start, end):
+        return [{'id': 'l1', 'name': 'Точка 1', 'revenue': 900, 'cash': 400, 'non_cash': 500, 'payouts': 50, 'reports': 2}]
+
+
+class CategoryTests(unittest.TestCase):
+    def test_keyword_rules_and_fallback(self):
+        from notimate.dashboard.categories import categorize
+        self.assertEqual(categorize('Makro', 'milk'), 'Продукты и сырьё')
+        self.assertEqual(categorize('', 'аренда за сентябрь'), 'Аренда')
+        self.assertEqual(categorize('Grab', ''), 'Транспорт и доставка')
+        self.assertEqual(categorize('', 'кофе в зёрнах'), 'Напитки')
+        self.assertEqual(categorize('Аня', '', 'salary'), 'Зарплаты')
+        self.assertEqual(categorize('X', 'что-то странное'), 'Прочее')
+        self.assertEqual(categorize(None, None), 'Прочее')
+
+    def test_tenant_overrides_win(self):
+        from notimate.dashboard.categories import categorize
+        self.assertEqual(categorize('Makro', 'milk', 'expense', {'Кухня': ['makro']}), 'Кухня')
+        self.assertEqual(categorize('Makro', 'milk', 'expense', {'Кухня': 'not-a-list'}), 'Продукты и сырьё')
+
 
 class SnapshotTests(unittest.TestCase):
     def test_contract_shape_and_month_scoping(self):
@@ -95,6 +124,25 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(snap['trend'][0]['revenue'], 0.0)
         self.assertEqual([p['label'] for p in snap['payments']], ['cash', 'card', 'qr'])
         self.assertEqual(reader.args[0], 't1')
+
+    def test_period_selection_and_category_breakdown(self):
+        now = dt.datetime(2026, 9, 24, 21, 0)
+        week = build_snapshot(FakeReader(), {'id': 't1', 'name': 'Кафе', 'sheet_id': 'SID', 'channels': ['line']}, 'week', now)
+        self.assertEqual(week['selected']['from'], '2026-09-18')
+        self.assertEqual(week['channels'], ['line'])
+        self.assertEqual(week['sheetUrl'], 'https://docs.google.com/spreadsheets/d/SID')
+        cats = {c['category']: c for c in week['expensesByCategory']}
+        self.assertEqual(set(cats), {'Продукты и сырьё', 'Аренда', 'Зарплаты', 'Прочее'})
+        self.assertEqual(cats['Аренда']['amount'], 700.0)
+        self.assertAlmostEqual(sum(c['share'] for c in cats.values()), 1.0, places=3)
+        self.assertEqual(week['expensesByCategory'][0]['category'], 'Аренда')  # sorted by amount
+        self.assertEqual(len(week['expenses']), 4)
+        day = build_snapshot(FakeReader(), {'id': 't1'}, 'day', now)
+        self.assertEqual(day['selected']['from'], '2026-09-24')
+
+    def test_location_tenant_gets_per_location_rows(self):
+        snap = build_snapshot(FakeReader(), {'id': 'e', 'vertical_pack': 'location_reports'}, 'day', dt.datetime(2026, 9, 24))
+        self.assertEqual(snap['locations'], [{'name': 'Точка 1', 'revenue': 900.0, 'cash': 400.0, 'nonCash': 500.0, 'payouts': 50.0, 'reports': 2}])
 
     def test_location_pack_flag_reaches_reader(self):
         reader = FakeReader()
@@ -205,6 +253,47 @@ class RouteTests(unittest.TestCase):
         wrong_scope = self.client.get('/d/package?t=' + links.issue_token(SECRET, 'b', 'ownerB', 'link', 60, '2026-09'))
         self.assertEqual(wrong_scope.status_code, 403)
 
+    def test_page_and_script_are_served_with_strict_headers(self):
+        page = self.client.get('/dashboard')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('text/html', page.headers['Content-Type'])
+        self.assertIn("script-src 'self'", page.headers['Content-Security-Policy'])
+        self.assertIn("frame-ancestors 'none'", page.headers['Content-Security-Policy'])
+        self.assertEqual(page.headers['Cache-Control'], 'no-store')
+        script = self.client.get('/dashboard/app.js')
+        self.assertEqual(script.status_code, 200)
+        self.assertIn('javascript', script.headers['Content-Type'])
+        self.assertNotIn(b'innerHTML', script.data)  # data is only ever inserted as text
+        with patch.dict(os.environ, {'DASHBOARD_LINK_SECRET': ''}):
+            self.assertEqual(self.client.get('/dashboard').status_code, 404)
+
+    def test_login_without_base_url_lands_on_the_dashboard_page(self):
+        with patch.dict(os.environ, {'DASHBOARD_BASE_URL': ''}):
+            response = self.login()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers['Location'], '/dashboard')
+
+    def test_snapshot_includes_accounting_block_with_package_link_when_module_on(self):
+        store = Mock()
+        store.list_confirmed.return_value = [{'doc_number': '2026-09-001', 'doc_type': 'receipt_simplified', 'seller': 'Makro', 'total': 100,
+                                              'doc_date': '2026-09-10', 'subtotal': None, 'vat': None, 'tax_id': '', 'doc_ref': '', 'image_sha256': None}]
+        store.list_operations.return_value = []
+        store.period_status.return_value = 'sent'
+        app_module.documents_store = store
+        app_module.DOCUMENTS_DB_ENABLED = True
+        self.tenants['b']['modules'] = {'accountant': {'enabled': True}}
+        self.login('b', 'ownerB')
+        snap = self.client.get('/v1/owner-dashboard').get_json()
+        block = snap['accounting']
+        self.assertEqual((block['available'], block['documents']), (True, 1))
+        self.assertEqual(block['previousStatus'], 'sent')
+        self.assertTrue(block['packageUrl'].startswith('https://api.example/d/package?t='))
+        self.assertGreaterEqual(block['missing'], 1)  # simplified receipt in a VAT-registered TH tenant
+        self.assertEqual(snap['channels'], [])
+        self.tenants['a']['modules'] = {}
+        self.login('a', 'ownerA')
+        self.assertIsNone(self.client.get('/v1/owner-dashboard').get_json()['accounting'])
+
     def test_owner_link_helpers_respect_pack_and_feature_flag(self):
         from notimate.dashboard import routes
         self.assertTrue(routes.owner_link(self.tenants['a'], 'ownerA').startswith('https://api.example/auth/link?t='))
@@ -253,6 +342,42 @@ class ReportsSourceTests(unittest.TestCase):
         reader.daily_totals.side_effect = RuntimeError('db down')
         message = self.run_summary({'REPORTS_SOURCE': 'postgres'}, reader)
         self.assertIn('Вечерняя сводка', message)
+
+
+class RetireOverviewTests(unittest.TestCase):
+    def test_next_working_tab_skips_overview_and_hidden_tabs(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('retire_overview_sheet', os.path.join(os.path.dirname(__file__), 'deploy', 'retire_overview_sheet.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        tab = lambda title, gid, hidden=False: Mock(title=title, id=gid, isSheetHidden=hidden)
+        tabs = [tab('Закупки', 1), tab('Обзор', 2), tab('Скрытая', 3, True), tab('Выручка', 4), tab('Расходы', 5)]
+        self.assertEqual(module.next_working_gid(tabs), 4)
+        self.assertEqual(module.next_working_gid([tab('Обзор', 2), tab('Закупки', 1)]), 1)  # wraps around
+        self.assertIsNone(module.next_working_gid([tab('Обзор', 2)]))
+
+
+class LineDashboardLinkTests(unittest.TestCase):
+    def test_owner_report_command_appends_dashboard_link_only_when_enabled(self):
+        from notimate import pipeline
+        cfg = {'channel_access_token': 't', 'owner_line_id': 'Uo', 'sheet_id': 's', 'name': 'JSC', 'modules': {'dashboard': {'enabled': True}}}
+        event = {'type': 'message', 'source': {'type': 'user', 'userId': 'Uo'}, 'message': {'type': 'text', 'text': 'подробный отчёт'}}
+        orig_sheets = app_module.SHEETS_ENABLED
+        app_module.SHEETS_ENABLED = True
+        self.addCleanup(setattr, app_module, 'SHEETS_ENABLED', orig_sheets)
+        with patch.dict(os.environ, {'DASHBOARD_LINK_SECRET': SECRET, 'DASHBOARD_API_BASE': 'https://api.example'}), \
+                patch.object(app_module, 'find_client', return_value=cfg), \
+                patch.object(app_module, 'detailed_report') as report, \
+                patch.object(app_module, 'notify_owner') as notify:
+            pipeline.process_line_event('dest', event)
+            report.assert_called_once()
+            self.assertIn('https://api.example/auth/link?t=', notify.call_args.args[1])
+        with patch.dict(os.environ, {'DASHBOARD_LINK_SECRET': SECRET, 'DASHBOARD_API_BASE': 'https://api.example'}), \
+                patch.object(app_module, 'find_client', return_value={**cfg, 'modules': {}}), \
+                patch.object(app_module, 'detailed_report'), \
+                patch.object(app_module, 'notify_owner') as notify:
+            pipeline.process_line_event('dest', event)
+            notify.assert_not_called()
 
 
 if __name__ == '__main__':

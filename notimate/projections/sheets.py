@@ -12,7 +12,8 @@ import pytz
 
 import app
 from logging_utils import get_logger
-from notimate.timeutil import bangkok_date, days_until
+from notimate.tenants import cfg_currency
+from notimate.timeutil import bangkok_date, days_until, local_date
 
 logger = get_logger()
 
@@ -117,11 +118,11 @@ def save_закупки(sheet_id, items, date_str, event_id):
         rows.append([date_cell, item.get('product',''), item.get('quantity','')])
     return append_rows_once(ws, rows, event_id, 'purchase')
 
-def save_расходы(sheet_id, items, date_str, supplier, note='', event_id=None, effect='expense'):
+def save_расходы(sheet_id, items, date_str, supplier, note='', event_id=None, effect='expense', currency='THB'):
     if not app.gc:
         raise RuntimeError('Google Sheets is not ready')
     sh = app.gc.open_by_key(sheet_id)
-    headers = ['Дата', 'Тип', 'Поставщик/Магазин', 'Позиция', 'Сумма (THB)', 'Примечание']
+    headers = ['Дата', 'Тип', 'Поставщик/Магазин', 'Позиция', f'Сумма ({currency})', 'Примечание']
     ws = get_or_create_sheet(sh, 'Расходы', headers)
     rows = []
     for item in items:
@@ -152,9 +153,9 @@ def save_одиночный_остаток(sheet_id, product, amount, date_str, 
     return append_rows_once(ws, [[date_str, '', product, amount, '', '']], event_id, 'single-stock')
 
 
-def save_зарплаты(sheet_id, items, date_str, event_id):
+def save_зарплаты(sheet_id, items, date_str, event_id, currency='THB'):
     sh = app.gc.open_by_key(sheet_id)
-    ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель','Сумма (THB)','Примечание'])
+    ws = get_or_create_sheet(sh, 'Зарплаты', ['Дата','Получатель',f'Сумма ({currency})','Примечание'])
     rows = [[date_str, item.get('recipient',''), item.get('amount',''), item.get('note','')] for item in items]
     return append_rows_once(ws, rows, event_id, 'salary')
 
@@ -170,14 +171,15 @@ def check_price_drift(sheet_id, items, supplier, client_cfg, event_id):
     """Проверяет дрейф цен и уведомляет если цена выросла >10%"""
     if not app.gc:
         return
+    cur = cfg_currency(client_cfg)
     try:
         sh = app.gc.open_by_key(sheet_id)
-        headers = ['Дата', 'Поставщик', 'Позиция', 'Цена (THB)']
+        headers = ['Дата', 'Поставщик', 'Позиция', f'Цена ({cur})']
         ws = get_or_create_sheet(sh, 'Цены', headers)
         rows = ws.get_all_records()
         alerts = []
         price_rows = []
-        date_today = bangkok_date()
+        date_today = local_date(client_cfg.get('timezone') or 'Asia/Bangkok')
         for item in items:
             name = item.get('description', '').strip()
             try:
@@ -191,7 +193,7 @@ def check_price_drift(sheet_id, items, supplier, client_cfg, event_id):
             for row in reversed(rows):
                 if row.get('Позиция','').lower() == name.lower():
                     try:
-                        prev_price = float(str(row.get('Цена (THB)', 0) or 0).replace('฿','').replace(',','').strip() or 0)
+                        prev_price = float(str(row.get(f'Цена ({cur})', 0) or 0).replace('฿','').replace(',','').strip() or 0)
                     except:
                         prev_price = None
                     break
@@ -200,7 +202,7 @@ def check_price_drift(sheet_id, items, supplier, client_cfg, event_id):
             if prev_price and prev_price > 0 and price > 0:
                 drift = (price - prev_price) / prev_price * 100
                 if drift >= 10:
-                    alerts.append(f"- {name}: {prev_price:.0f} → {price:.0f} THB (+{drift:.0f}%)")
+                    alerts.append(f"- {name}: {prev_price:.0f} → {price:.0f} {cur} (+{drift:.0f}%)")
         created = append_rows_once(ws, price_rows, event_id, 'price')
         if alerts and created:
             msg = f"⚠️ ДРЕЙФ ЦЕН от {supplier}:\n"
@@ -472,7 +474,14 @@ def refresh_overview(client_cfg):
 
 
 def refresh_overview_safely(client_cfg):
-    """Keep dashboard refresh useful but never let it block a confirmed operation."""
+    """Keep dashboard refresh useful but never let it block a confirmed operation.
+
+    The in-sheet «Обзор» tab was retired 2026-09-24 in favour of the external web dashboard
+    (notimate/dashboard); it is only maintained for a tenant that opts back in with
+    ``overview_enabled: true`` in its client configuration.
+    """
+    if not client_cfg.get('overview_enabled'):
+        return None
     try:
         return app.refresh_overview(client_cfg)
     except Exception as exc:
