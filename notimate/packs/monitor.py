@@ -90,9 +90,15 @@ def process_monitor_event(row: dict[str, Any], config: dict[str, Any], inbound) 
     if inbound.sender_id not in allowed_senders(row):
         reply('Доступ не настроен для этого номера. Обратитесь к владельцу.')
         return
-    if not (app.SHEETS_ENABLED and tenant.get('sheet_id')):
+    # The panel, help and the accountant's document commands read PostgreSQL and work without a
+    # sheet; everything that writes to or reads from the client's Google Sheet needs one.
+    has_sheet = bool(app.SHEETS_ENABLED and tenant.get('sheet_id'))
+
+    def needs_sheet() -> bool:
+        if has_sheet:
+            return False
         reply('Таблица клиента пока не подключена — запись невозможна. Сообщите владельцу.')
-        return
+        return True
 
     cfg = build_cfg(row, config, notify_owners)
     label = f" ({tenant.get('name')})" if row['channel'].get('shared') and tenant.get('name') else ''
@@ -103,18 +109,28 @@ def process_monitor_event(row: dict[str, Any], config: dict[str, Any], inbound) 
         command = _normalize(text)
         if is_owner:
             if command in MONEY_COMMANDS:
+                if needs_sheet():
+                    return
                 app.evening_summary(cfg, tenant_id=tenant_id)
                 return
             if command in SUMMARY_COMMANDS:
+                if needs_sheet():
+                    return
                 app.detailed_report(cfg)
                 return
             if command in REMINDER_COMMANDS:
+                if needs_sheet():
+                    return
                 app.reminders_report(cfg)
                 return
             if command in WEEK_COMMANDS:
+                if needs_sheet():
+                    return
                 app.weekly_report(cfg)
                 return
             if command in SYNC_COMMANDS:
+                if needs_sheet():
+                    return
                 from notimate.projections.sheets_sync import run_sync_safely
                 summary = run_sync_safely(tenant_id, cfg)
                 reply('✅ Таблица синхронизирована с панелью.' if summary is not None else 'Не удалось синхронизировать, попробуйте позже.')
@@ -130,13 +146,15 @@ def process_monitor_event(row: dict[str, Any], config: dict[str, Any], inbound) 
         if command in HELP_COMMANDS:
             reply(HELP_TEXT)
             return
-        if not text:
+        if not text or needs_sheet():
             return
         status = pipeline.handle_text(tenant_id, cfg, inbound.external_event_id, text)
         if status != 'ignored':
             reply('✅ Принято, записал в таблицу.' + label)
         return
 
+    if needs_sheet():
+        return
     try:
         data, mime = app.whatsapp_download_media(access_token, media[0]['id'])
     except Exception as exc:

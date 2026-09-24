@@ -63,6 +63,21 @@ class MonitorTests(unittest.TestCase):
         monitor.process_monitor_event(row, CONFIG, inbound('staff1', 'x'))
         self.assertIn('не подключена', self.last())
 
+    def test_panel_and_help_work_without_a_sheet_but_writing_needs_one(self):
+        row = {**ROW, 'tenant': {**ROW['tenant'], 'sheet_id': None}}
+        with patch('notimate.dashboard.routes.owner_link', return_value='https://x/auth/link?t=1'):
+            monitor.process_monitor_event(row, CONFIG, inbound('owner1', 'дашборд'))
+        self.assertIn('https://x/auth/link', self.last())
+        monitor.process_monitor_event(row, CONFIG, inbound('owner1', 'помощь'))
+        self.assertIn('мониторинг', self.last())
+        for text in ('деньги', 'молоко 200'):
+            monitor.process_monitor_event(row, CONFIG, inbound('owner1', text))
+            self.assertIn('не подключена', self.last())
+        monitor.process_monitor_event(row, CONFIG, inbound('staff1', media=({'kind': 'image', 'id': 'M1'},)))
+        self.assertIn('не подключена', self.last())
+        self.handle_text.assert_not_called()
+        self.handle_image.assert_not_called()
+
     def test_staff_text_goes_to_shared_handler_with_tenant_cfg_and_is_acknowledged(self):
         monitor.process_monitor_event(ROW, CONFIG, inbound('staff1', 'купили молоко 200'))
         args = self.handle_text.call_args.args
